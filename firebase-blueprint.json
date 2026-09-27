@@ -1,0 +1,237 @@
+{
+  "entities": {
+    "SchoolInfo": {
+      "title": "School Information",
+      "description": "General information and contact details for the school.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 200 },
+        "tagline": { "type": "string", "maxLength": 300 },
+        "address": { "type": "string", "maxLength": 500 },
+        "phone": { "type": "string", "maxLength": 50 },
+        "email": { "type": "string", "maxLength": 100 },
+        "workingHours": { "type": "string", "maxLength": 100 },
+        "establishedYear": { "type": "string", "maxLength": 10 },
+        "studentCount": { "type": "string", "maxLength": 20 },
+        "teacherCount": { "type": "string", "maxLength": 20 },
+        "successRate": { "type": "string", "maxLength": 20 },
+        "logoUrl": { "type": "string", "maxLength": 1000 },
+        "facebookUrl": { "type": "string", "maxLength": 500 },
+        "instagramUrl": { "type": "string", "maxLength": 500 },
+        "youtubeUrl": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["name", "phone", "email"]
+    },
+    "SectionTexts": {
+      "title": "Section Texts",
+      "description": "Customizable banner and section texts on the website.",
+      "type": "object",
+      "properties": {
+        "topAnnouncement": { "type": "string", "maxLength": 1000 },
+        "heroTitle": { "type": "string", "maxLength": 300 },
+        "heroSubtitle": { "type": "string", "maxLength": 500 },
+        "programsTitle": { "type": "string", "maxLength": 200 },
+        "programsSubtitle": { "type": "string", "maxLength": 500 },
+        "newsTitle": { "type": "string", "maxLength": 200 },
+        "newsSubtitle": { "type": "string", "maxLength": 500 },
+        "aboutBadge": { "type": "string", "maxLength": 200 },
+        "aboutTitle": { "type": "string", "maxLength": 200 },
+        "aboutDescription": { "type": "string", "maxLength": 3000 },
+        "aboutMissionQuote": { "type": "string", "maxLength": 1000 },
+        "aboutMissionSubtitle": { "type": "string", "maxLength": 200 },
+        "aboutImageUrl": { "type": "string", "maxLength": 1000 },
+        "aboutStatValue": { "type": "string", "maxLength": 50 },
+        "aboutStatLabel": { "type": "string", "maxLength": 200 },
+        "aboutButtonText": { "type": "string", "maxLength": 100 },
+        "aboutValues": { "type": "array" },
+        "footerDescription": { "type": "string", "maxLength": 1000 },
+        "admissionModalTitle": { "type": "string", "maxLength": 300 },
+        "admissionModalSubtitle": { "type": "string", "maxLength": 1000 }
+      }
+    },
+    "MarqueeAnnouncement": {
+      "title": "Marquee Announcement",
+      "description": "Scrolling announcement banner at top of header.",
+      "type": "object",
+      "properties": {
+        "text": { "type": "string", "maxLength": 500 },
+        "link": { "type": "string", "maxLength": 500 },
+        "isActive": { "type": "boolean" },
+        "isEmergency": { "type": "boolean" }
+      },
+      "required": ["text", "isActive"]
+    },
+    "Program": {
+      "title": "Educational Program",
+      "description": "Academic and extracurricular curriculum programs.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 200 },
+        "subtitle": { "type": "string", "maxLength": 300 },
+        "category": { "type": "string", "maxLength": 50 },
+        "categoryName": { "type": "string", "maxLength": 100 },
+        "description": { "type": "string", "maxLength": 3000 },
+        "imageUrl": { "type": "string", "maxLength": 1000 },
+        "tags": { "type": "array" },
+        "curriculum": { "type": "string", "maxLength": 500 },
+        "ageRange": { "type": "string", "maxLength": 100 },
+        "schedule": { "type": "string", "maxLength": 100 },
+        "features": { "type": "array" },
+        "featured": { "type": "boolean" }
+      },
+      "required": ["title", "category", "description"]
+    },
+    "NewsArticle": {
+      "title": "News Article",
+      "description": "School news, announcements, and activity updates.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 300 },
+        "excerpt": { "type": "string", "maxLength": 1000 },
+        "content": { "type": "string", "maxLength": 10000 },
+        "imageUrl": { "type": "string", "maxLength": 1000 },
+        "images": { "type": "array" },
+        "category": { "type": "string", "maxLength": 50 },
+        "categoryName": { "type": "string", "maxLength": 100 },
+        "date": { "type": "string", "maxLength": 50 },
+        "author": { "type": "string", "maxLength": 100 },
+        "views": { "type": "number" },
+        "isPinned": { "type": "boolean" }
+      },
+      "required": ["title", "excerpt", "content", "category"]
+    },
+    "CalendarEvent": {
+      "title": "Calendar Event",
+      "description": "School annual calendar events, exams, holidays.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 200 },
+        "month": { "type": "string", "maxLength": 20 },
+        "monthName": { "type": "string", "maxLength": 50 },
+        "day": { "type": "string", "maxLength": 20 },
+        "dateRange": { "type": "string", "maxLength": 100 },
+        "category": { "type": "string", "maxLength": 50 },
+        "categoryName": { "type": "string", "maxLength": 100 },
+        "targetGroup": { "type": "string", "maxLength": 100 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "location": { "type": "string", "maxLength": 200 },
+        "isImportant": { "type": "boolean" }
+      },
+      "required": ["title", "month", "day", "category"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "School academic and activity categories.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "slug": { "type": "string", "maxLength": 50 },
+        "iconName": { "type": "string", "maxLength": 50 },
+        "description": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["name", "slug"]
+    },
+    "HeroSlide": {
+      "title": "Hero Slide",
+      "description": "Homepage top carousel banner slides.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 200 },
+        "subtitle": { "type": "string", "maxLength": 300 },
+        "imageUrl": { "type": "string", "maxLength": 1000 },
+        "ctaText": { "type": "string", "maxLength": 100 },
+        "ctaLink": { "type": "string", "maxLength": 500 },
+        "tag": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["title", "imageUrl"]
+    },
+    "Inquiry": {
+      "title": "User Inquiry / Feedback",
+      "description": "Parent, student feedback, questions, or admission requests.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "phone": { "type": "string", "maxLength": 50 },
+        "email": { "type": "string", "maxLength": 100 },
+        "type": { "type": "string", "maxLength": 50 },
+        "subject": { "type": "string", "maxLength": 200 },
+        "message": { "type": "string", "maxLength": 3000 },
+        "gradeLevel": { "type": "string", "maxLength": 50 },
+        "programInterest": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "status": { "type": "string", "maxLength": 20 }
+      },
+      "required": ["name", "phone", "message"]
+    },
+    "InstitutionalArticle": {
+      "title": "Institutional Article",
+      "description": "Detailed institutional informational articles and policy documents.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "slug": { "type": "string", "maxLength": 100 },
+        "title": { "type": "string", "maxLength": 300 },
+        "subtitle": { "type": "string", "maxLength": 500 },
+        "category": { "type": "string", "maxLength": 100 },
+        "readTime": { "type": "string", "maxLength": 50 },
+        "coverImage": { "type": "string", "maxLength": 1000 },
+        "images": { "type": "array" },
+        "summary": { "type": "string", "maxLength": 2000 },
+        "sections": { "type": "array" }
+      },
+      "required": ["id", "slug", "title", "category"]
+    }
+  },
+  "firestore": {
+    "/test/{testId}": {
+      "schema": "SchoolInfo",
+      "description": "Connection test document"
+    },
+    "/settings/schoolInfo": {
+      "schema": "SchoolInfo",
+      "description": "Stores school branding and contact details"
+    },
+    "/settings/sectionTexts": {
+      "schema": "SectionTexts",
+      "description": "Stores customizable section text titles and intros"
+    },
+    "/settings/marquee": {
+      "schema": "MarqueeAnnouncement",
+      "description": "Stores live ticker banner text"
+    },
+    "/programs/{programId}": {
+      "schema": "Program",
+      "description": "Educational curriculum programs"
+    },
+    "/news/{newsId}": {
+      "schema": "NewsArticle",
+      "description": "School news and announcements"
+    },
+    "/calendar/{eventId}": {
+      "schema": "CalendarEvent",
+      "description": "School calendar plan events"
+    },
+    "/categories/{categoryId}": {
+      "schema": "Category",
+      "description": "Academic and program categories"
+    },
+    "/slides/{slideId}": {
+      "schema": "HeroSlide",
+      "description": "Homepage hero banner slides"
+    },
+    "/inquiries/{inquiryId}": {
+      "schema": "Inquiry",
+      "description": "Feedback, questions, and admission requests submitted by visitors"
+    },
+    "/institutional_articles/{articleId}": {
+      "schema": "InstitutionalArticle",
+      "description": "Institutional detailed articles and policies"
+    }
+  }
+}

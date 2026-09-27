@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="mn">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      (function() {
+        try {
+          var origFetch = window.fetch;
+          if (typeof origFetch === 'function') {
+            var currentFetch = origFetch.bind(window);
+            Object.defineProperty(window, 'fetch', {
+              get: function() {
+                return currentFetch;
+              },
+              set: function(val) {
+                currentFetch = typeof val === 'function' ? val : origFetch;
+              },
+              configurable: true,
+              enumerable: true
+            });
+          }
+        } catch (_e) {
+          // Graceful fallback
+        }
+      })();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Эрдмийн далай - ЭДС</title>
+    <meta name="description" content="Ерөнхий боловсролын сургуулийн албан ёсны цахим хуудас" />
+    <meta name="keywords" content="Эрдэм систем, Эрдмийн далай, Erdem system, ЭДС" />
+    <meta property="og:title" content="Эрдмийн далай-ЭДС" />
+    <meta property="og:description" content="Ерөнхий боловсролын сургуулийн албан ёсны цахим хуудас" />
+    <meta property="og:image" content="s_zurag.jpg" />
+    <meta property="og:url" content="https://eds.edu.mn" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image:secure_url" content="s_zurag.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:type" content="image/jpeg" />
+    <link rel="icon" type="image/x-icon" href="logo.ico" />
+    <link rel="shortcut icon" href="logo.ico" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  </head>
+  <body class="font-sans antialiased text-slate-800 bg-[#fafafa]">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

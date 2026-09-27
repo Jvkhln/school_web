@@ -1,0 +1,6 @@
+{
+  "name": "Сургуулийн веб сайт ба удирдлагын систем",
+  "description": "Сургуулийн танилцуулга, хөтөлбөр, зар мэдээлэл бүхий нүүр хуудас болон ангиллаар мэдээлэл нийтлэх админ удирдлагын систем",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,105 @@
+import React from 'react';
+import {
+  GraduationCap,
+  Cpu,
+  Globe,
+  Award,
+  Palette,
+  Trophy,
+  Trees,
+  BookOpen,
+  School,
+  Sparkles,
+  Music,
+  Code,
+  HeartHandshake,
+  Compass,
+  Users,
+  Laptop,
+  Library,
+  ShieldCheck,
+  Video,
+  FileText,
+  Bookmark,
+  Star,
+  Activity,
+  Rocket,
+  Globe2,
+  Layers,
+  ExternalLink,
+  Database,
+  FolderKanban,
+  Briefcase,
+  Microscope,
+  Atom,
+  Languages,
+  Building2,
+  Calculator,
+  BookMarked,
+  Dumbbell,
+  Theater,
+  Newspaper,
+  ClipboardCheck,
+  FileCheck,
+  Bell,
+  CheckCircle2,
+  LucideIcon
+} from 'lucide-react';
+
+const ICON_MAP: Record<string, LucideIcon> = {
+  GraduationCap,
+  Cpu,
+  Globe,
+  Award,
+  Palette,
+  Trophy,
+  Trees,
+  BookOpen,
+  School,
+  Sparkles,
+  Music,
+  Code,
+  HeartHandshake,
+  Compass,
+  Users,
+  Laptop,
+  Library,
+  ShieldCheck,
+  Video,
+  FileText,
+  Bookmark,
+  Star,
+  Activity,
+  Rocket,
+  Globe2,
+  Layers,
+  ExternalLink,
+  Database,
+  FolderKanban,
+  Briefcase,
+  Microscope,
+  Atom,
+  Languages,
+  Building2,
+  Calculator,
+  BookMarked,
+  Dumbbell,
+  Theater,
+  Newspaper,
+  ClipboardCheck,
+  FileCheck,
+  Bell,
+  CheckCircle2
+};
+
+interface CategoryIconProps {
+  name: string;
+  className?: string;
+}
+
+export const CategoryIcon: React.FC<CategoryIconProps> = ({ name, className = 'w-6 h-6' }) => {
+  const IconComponent = ICON_MAP[name] || School;
+  return <IconComponent className={className} />;
+};
+
+export const AVAILABLE_ICON_NAMES = Object.keys(ICON_MAP);

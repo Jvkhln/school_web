@@ -1,0 +1,76 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isValidString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Settings Collection (SchoolInfo, SectionTexts, Marquee)
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Programs Collection
+    match /programs/{programId} {
+      allow read: if true;
+      allow write: if isValidId(programId);
+    }
+
+    // News Collection
+    match /news/{newsId} {
+      allow read: if true;
+      allow write: if isValidId(newsId);
+    }
+
+    // Calendar Events Collection
+    match /calendar/{eventId} {
+      allow read: if true;
+      allow write: if isValidId(eventId);
+    }
+
+    // Categories Collection
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow write: if isValidId(categoryId);
+    }
+
+    // Hero Slides Collection
+    match /slides/{slideId} {
+      allow read: if true;
+      allow write: if isValidId(slideId);
+    }
+
+    // Inquiries (Feedback, Admission, Question) Collection
+    match /inquiries/{inquiryId} {
+      allow read: if true;
+      allow create: if isValidId(inquiryId)
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.phone is string
+        && request.resource.data.phone.size() > 0;
+      allow update, delete: if isValidId(inquiryId);
+    }
+
+    // Institutional Articles Collection
+    match /institutional_articles/{articleId} {
+      allow read: if true;
+      allow write: if isValidId(articleId);
+    }
+
+    // Connection Test Document
+    match /test/{testId} {
+      allow read, write: if true;
+    }
+
+    // Default Deny Rule
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
