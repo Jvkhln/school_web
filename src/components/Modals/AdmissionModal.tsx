@@ -14,7 +14,8 @@ import {
   EyeOff,
   LogIn,
   KeyRound,
-  AlertCircle
+  AlertCircle,
+  FileSpreadsheet
 } from 'lucide-react';
 
 export const AdmissionModal: React.FC = () => {
@@ -174,6 +175,10 @@ export const AdmissionModal: React.FC = () => {
                   Манай элсэлтийн менежер таны бүртгүүлсэн утсаар 24 цагийн дотор холбогдож дэлгэрэнгүй
                   мэдээлэл өгөх болно.
                 </p>
+                <div className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-800 border border-emerald-200 px-3 py-1 rounded-full text-xs font-semibold">
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Google Sheets хүснэгтэд амжилттай бүртгэгдлээ</span>
+                </div>
               </div>
             ) : (
               <div>

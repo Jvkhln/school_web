@@ -21,7 +21,8 @@ import {
   AlertTriangle,
   Info,
   Shield,
-  Lock
+  Lock,
+  FileSpreadsheet
 } from 'lucide-react';
 import { RiskLevel } from '../../types';
 
@@ -95,6 +96,8 @@ export const FeedbackModal: React.FC = () => {
     method?: string;
     activationNeeded?: boolean;
     message?: string;
+    sheetRecorded?: boolean;
+    spreadsheetUrl?: string;
   } | null>(null);
   const [lastSubmittedData, setLastSubmittedData] = useState<{
     subject: string;
@@ -427,6 +430,12 @@ ${formData.message.trim()}`;
                 )}
                 {deliveryResult.success === false && (
                   <p className="text-rose-600">Имэйл илгээхэд мэдэгдэл: {deliveryResult.message || 'Алдаа гарлаа'}</p>
+                )}
+                {deliveryResult.sheetRecorded && (
+                  <div className="text-emerald-700 font-medium flex items-center justify-center gap-1.5 pt-1.5 border-t border-slate-200/80">
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>✓ Google Sheets хүснэгтэд амжилттай бүртгэгдсэн.</span>
+                  </div>
                 )}
               </div>
             )}

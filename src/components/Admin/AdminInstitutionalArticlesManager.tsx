@@ -3,6 +3,7 @@ import { useSchool } from '../../context/SchoolContext';
 import { InstitutionalArticle } from '../../types';
 import { MultiImagePresetPicker, MediaAttachmentsManager } from './ImagePresetPicker';
 import { getArticlePermalink } from '../../utils/permalinks';
+import { formatGoogleDriveImageUrl } from '../../lib/googleDrive';
 import {
   BookOpen,
   Edit2,
@@ -25,17 +26,40 @@ import {
   Copy,
   Check,
   Video,
-  Music
+  Music,
+  FileSpreadsheet,
+  RefreshCw
 } from 'lucide-react';
 
 export const AdminInstitutionalArticlesManager: React.FC = () => {
-  const { institutionalArticles, updateInstitutionalArticle, openArticleBySlug } = useSchool();
+  const {
+    institutionalArticles,
+    updateInstitutionalArticle,
+    openArticleBySlug,
+    isGoogleConnected,
+    spreadsheetId,
+    isSheetsSyncing,
+    syncToSheetsWithData,
+    loginWithGoogle
+  } = useSchool();
   const [selectedArticle, setSelectedArticle] = useState<InstitutionalArticle | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCategory, setFilterCategory] = useState<'all' | 'about' | 'education'>('all');
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+
+  const handleManualSync = async () => {
+    setSyncFeedback(null);
+    const res = await syncToSheetsWithData({ institutionalArticles });
+    if (res.success) {
+      setSyncFeedback('Google Sheets бааз руу амжилттай хадгалагдлаа!');
+    } else {
+      setSyncFeedback(res.message);
+    }
+    setTimeout(() => setSyncFeedback(null), 4000);
+  };
 
   // Form State
   const [title, setTitle] = useState('');
@@ -145,17 +169,66 @@ export const AdminInstitutionalArticlesManager: React.FC = () => {
       {/* Top Banner */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
-          <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-            <BookOpen className="w-5 h-5 text-amber-600" />
-            <span>Дэд цэсийн нийтлэл & холбоос удирдах</span>
-          </h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+              <BookOpen className="w-5 h-5 text-amber-600" />
+              <span>Дэд цэсийн нийтлэл & холбоос удирдах</span>
+            </h2>
+            {spreadsheetId && (
+              <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-0.5 rounded-full font-medium ${
+                isGoogleConnected
+                  ? 'text-emerald-800 bg-emerald-50 border border-emerald-300'
+                  : 'text-amber-800 bg-amber-50 border border-amber-300'
+              }`}>
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>{isGoogleConnected ? 'Google Sheets баазтай синк болно' : 'Google Sheets холбогдсон'}</span>
+              </span>
+            )}
+          </div>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            "Бидний тухай" (5 цэс) ба "Сургалт" (4 цэс)-ийн дэд урсдаг цэсүүдийн нийтлэл, холбоосууд, зураг, агуулгыг тохируулах.
+            "Бидний тухай" (5 цэс) ба "Сургалт" (4 цэс)-ийн дэд урсдаг цэсүүдийн нийтлэл, холбоосууд, зураг, агуулгыг тохируулах. Өөрчлөлт Google Sheets баазад шууд хадгалагдана.
           </p>
+          {syncFeedback && (
+            <div className="mt-2 text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg inline-flex items-center gap-1.5 animate-in fade-in">
+              <Check className="w-3.5 h-3.5 text-emerald-600" />
+              <span>{syncFeedback}</span>
+            </div>
+          )}
         </div>
 
-        {/* Filter Tabs */}
-        <div className="flex items-center gap-2 bg-slate-100 p-1.5 rounded-xl self-start md:self-auto">
+        <div className="flex flex-wrap items-center gap-2">
+          {spreadsheetId && (
+            isGoogleConnected ? (
+              <button
+                type="button"
+                onClick={handleManualSync}
+                disabled={isSheetsSyncing}
+                className="bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-semibold px-3 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs disabled:opacity-50"
+                title="Дэд цэсийн нийтлэлүүдийг Google Sheets рүү хадгалах"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSheetsSyncing ? 'animate-spin text-emerald-600' : 'text-emerald-700'}`} />
+                <span>{isSheetsSyncing ? 'Хадгалж байна...' : 'Sheets рүү хадгалах'}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={async () => {
+                  const res = await loginWithGoogle();
+                  if (res?.success) {
+                    setTimeout(() => handleManualSync(), 300);
+                  }
+                }}
+                className="bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 text-xs font-semibold px-3 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                title="Google Sheets холболтын эрхийг шинэчлэх"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-amber-600" />
+                <span>Google-ээр холбогдох</span>
+              </button>
+            )
+          )}
+
+          {/* Filter Tabs */}
+          <div className="flex items-center gap-2 bg-slate-100 p-1.5 rounded-xl self-start md:self-auto">
           <button
             onClick={() => setFilterCategory('all')}
             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
@@ -186,6 +259,7 @@ export const AdminInstitutionalArticlesManager: React.FC = () => {
           >
             Сургалт (4)
           </button>
+        </div>
         </div>
       </div>
 
@@ -469,7 +543,7 @@ export const AdminInstitutionalArticlesManager: React.FC = () => {
                 {/* Cover header */}
                 <div className="relative h-48 w-full bg-slate-800">
                   <img
-                    src={selectedArticle.coverImage || 'https://images.unsplash.com/photo-1524178232363-1fb2b075b655?q=80&w=1200&auto=format&fit=crop'}
+                    src={formatGoogleDriveImageUrl(selectedArticle.coverImage) || 'https://images.unsplash.com/photo-1524178232363-1fb2b075b655?q=80&w=1200&auto=format&fit=crop'}
                     alt={selectedArticle.title}
                     referrerPolicy="no-referrer"
                     className="w-full h-full object-cover opacity-80"

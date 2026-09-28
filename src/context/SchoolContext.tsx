@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { User } from 'firebase/auth';
 import {
   CategoryItem,
   HeroSlide,
@@ -26,61 +27,17 @@ import {
   DEFAULT_SMTP_CONFIG
 } from '../data/initialData';
 import { FALLBACK_IMAGE_URL } from '../components/Admin/ImagePresetPicker';
-import { db, auth } from '../lib/firebase';
+import { initAuth, googleSignIn, logoutGoogle, getAccessToken, invalidateAccessToken, trySilentTokenRefresh } from '../lib/firebase';
+import { formatGoogleDriveImageUrl } from '../lib/googleDrive';
 import {
-  collection,
-  doc,
-  setDoc,
-  deleteDoc,
-  onSnapshot,
-  getDocs
-} from 'firebase/firestore';
-
-enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
-
-interface FirestoreErrorInfo {
-  error: string;
-  operationType: OperationType;
-  path: string | null;
-  authInfo: {
-    userId?: string | null;
-    email?: string | null;
-    emailVerified?: boolean | null;
-    isAnonymous?: boolean | null;
-    tenantId?: string | null;
-    providerInfo?: {
-      providerId?: string | null;
-      email?: string | null;
-    }[];
-  };
-}
-
-function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth?.currentUser?.uid,
-      email: auth?.currentUser?.email,
-      emailVerified: auth?.currentUser?.emailVerified,
-      isAnonymous: auth?.currentUser?.isAnonymous,
-      tenantId: auth?.currentUser?.tenantId,
-      providerInfo: auth?.currentUser?.providerData?.map(provider => ({
-        providerId: provider.providerId,
-        email: provider.email,
-      })) || []
-    },
-    operationType,
-    path
-  };
-  console.warn('Firestore Note: ', JSON.stringify(errInfo));
-}
+  createSchoolSpreadsheet,
+  appendInquiryToSheet,
+  syncAllDataToSheet,
+  loadDataFromSheet,
+  getSpreadsheetDetails,
+  SheetSyncData,
+  GoogleAuthExpiredError
+} from '../lib/googleSheets';
 
 interface SchoolContextType {
   // State
@@ -104,10 +61,30 @@ interface SchoolContextType {
   adminUsername: string;
   adminEmail: string;
   searchQuery: string;
-  isFirebaseConnected: boolean;
   isInitialLoading: boolean;
   isDedicatedNewsView: boolean;
   isProgramsPortalView: boolean;
+
+  // Google Sheets Integration State
+  googleUser: User | null;
+  googleToken: string | null;
+  isGoogleConnected: boolean;
+  spreadsheetId: string;
+  spreadsheetTitle: string;
+  spreadsheetUrl: string;
+  isSheetsSyncing: boolean;
+  lastSheetsSyncTime: string | null;
+  autoSyncToSheets: boolean;
+
+  // Google Sheets Actions
+  loginWithGoogle: () => Promise<{ success: boolean; user?: User; error?: string; cancelled?: boolean; isUnauthorizedDomain?: boolean }>;
+  logoutFromGoogle: () => Promise<void>;
+  updateSpreadsheetId: (id: string) => Promise<{ success: boolean; title?: string; message: string }>;
+  setAutoSyncToSheets: (val: boolean) => void;
+  createNewSchoolSpreadsheet: () => Promise<{ success: boolean; spreadsheetId?: string; url?: string; message: string; isAuthExpired?: boolean }>;
+  syncAllToGoogleSheets: () => Promise<{ success: boolean; message: string; isAuthExpired?: boolean }>;
+  syncToSheetsWithData: (customData?: Partial<SheetSyncData>) => Promise<{ success: boolean; message: string; notConnected?: boolean; isAuthExpired?: boolean }>;
+  loadAllFromGoogleSheets: () => Promise<{ success: boolean; message: string }>;
 
   // Setters & Triggers
   setIsDedicatedNewsView: (val: boolean) => void;
@@ -185,33 +162,6 @@ interface SchoolContextType {
 
 const SchoolContext = createContext<SchoolContextType | undefined>(undefined);
 
-// Clear legacy cached data keys on first load to prevent flash of old template
-try {
-  const CACHE_VERSION_KEY = 'school_cache_version_key';
-  const CURRENT_VERSION = 'v4';
-  if (typeof window !== 'undefined') {
-    const savedVer = localStorage.getItem(CACHE_VERSION_KEY);
-    if (savedVer !== CURRENT_VERSION) {
-      const keysToClean = [
-        'school_categories_v1', 'school_categories_v2', 'school_categories_v3',
-        'school_slides_v1', 'school_slides_v2', 'school_slides_v3',
-        'school_programs_v1', 'school_programs_v2', 'school_programs_v3',
-        'school_news_v1', 'school_news_v2', 'school_news_v3',
-        'school_info_v1', 'school_info_v2', 'school_info_v3',
-        'school_section_texts_v1', 'school_section_texts_v2', 'school_section_texts_v3',
-        'school_calendar_events_v1', 'school_calendar_events_v2', 'school_calendar_events_v3',
-        'school_data_synced_v3'
-      ];
-      keysToClean.forEach(k => {
-        try { localStorage.removeItem(k); } catch (e) {}
-      });
-      localStorage.setItem(CACHE_VERSION_KEY, CURRENT_VERSION);
-    }
-  }
-} catch (e) {
-  // ignore
-}
-
 const STORAGE_KEYS = {
   CATEGORIES: 'school_categories_v4',
   SLIDES: 'school_slides_v4',
@@ -227,35 +177,58 @@ const STORAGE_KEYS = {
   ADMIN_AUTH: 'school_admin_auth_v1',
   ADMIN_USER: 'school_admin_username_v1',
   ADMIN_EMAIL: 'school_admin_email_v1',
-  ADMIN_PASS: 'school_admin_password_v1'
+  ADMIN_PASS: 'school_admin_password_v1',
+  SPREADSHEET_ID: 'school_google_spreadsheet_id_v1',
+  SPREADSHEET_TITLE: 'school_google_spreadsheet_title_v1',
+  LAST_SHEETS_SYNC: 'school_last_sheets_sync_v1',
+  AUTO_SHEETS_SYNC: 'school_auto_sheets_sync_v1'
 };
 
-const ALLOWED_CATEGORY_SLUGS = new Set(['news-info', 'olympiad', 'sports-arts', 'primary', 'admission-exam']);
-
-// Helper to ensure no undefined values are sent to Firestore
-function cleanForFirestore<T extends Record<string, any>>(obj: T): T {
-  const result: any = {};
-  for (const [key, value] of Object.entries(obj)) {
-    if (value !== undefined) {
-      if (value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
-        result[key] = cleanForFirestore(value);
-      } else {
-        result[key] = value;
-      }
-    }
-  }
-  return result;
-}
-
 export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Loading state for initial cold load to avoid flash of content
-  const [isInitialLoading, setIsInitialLoading] = useState<boolean>(() => {
-    try {
-      return !localStorage.getItem('school_data_synced_v4');
-    } catch {
-      return false;
-    }
+  const [isInitialLoading, setIsInitialLoading] = useState<boolean>(false);
+
+  // Google Sheets state
+  const [googleUser, setGoogleUser] = useState<User | null>(null);
+  const [googleToken, setGoogleToken] = useState<string | null>(null);
+  const [isSheetsSyncing, setIsSheetsSyncing] = useState<boolean>(false);
+
+  const [spreadsheetId, setSpreadsheetIdState] = useState<string>(() => {
+    return localStorage.getItem(STORAGE_KEYS.SPREADSHEET_ID) || '';
   });
+
+  const [spreadsheetTitle, setSpreadsheetTitle] = useState<string>(() => {
+    return localStorage.getItem(STORAGE_KEYS.SPREADSHEET_TITLE) || 'Эрдмийн Далай Цогцолбор Сургууль - Хүснэгт';
+  });
+
+  const [lastSheetsSyncTime, setLastSheetsSyncTime] = useState<string | null>(() => {
+    return localStorage.getItem(STORAGE_KEYS.LAST_SHEETS_SYNC);
+  });
+
+  const [autoSyncToSheets, setAutoSyncToSheetsState] = useState<boolean>(() => {
+    return localStorage.getItem(STORAGE_KEYS.AUTO_SHEETS_SYNC) !== 'false';
+  });
+
+  const isGoogleConnected = Boolean(googleUser && googleToken);
+  const spreadsheetUrl = spreadsheetId
+    ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`
+    : '';
+
+  // Initialize Auth state listener
+  useEffect(() => {
+    const unsub = initAuth(
+      (user, token) => {
+        setGoogleUser(user);
+        setGoogleToken(token);
+      },
+      () => {
+        setGoogleUser(null);
+        setGoogleToken(null);
+      }
+    );
+    return () => {
+      if (typeof unsub === 'function') unsub();
+    };
+  }, []);
 
   // Load initial states from localStorage with default fallbacks
   const [categories, setCategories] = useState<CategoryItem[]>(() => {
@@ -263,12 +236,8 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
-        }
-      } catch (e) {
-        // fallback
-      }
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch (e) {}
     }
     return INITIAL_CATEGORIES;
   });
@@ -302,9 +271,7 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           parsed.defaultNewsImageUrl = FALLBACK_IMAGE_URL;
         }
         return parsed;
-      } catch (e) {
-        // fallback
-      }
+      } catch (e) {}
     }
     return INITIAL_SCHOOL_INFO;
   });
@@ -313,34 +280,30 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const saved = localStorage.getItem(STORAGE_KEYS.SECTION_TEXTS);
     if (saved) {
       try {
-        const parsed = JSON.parse(saved);
-        return parsed;
-      } catch (e) {
-        // fallback
-      }
+        return JSON.parse(saved);
+      } catch (e) {}
     }
     return INITIAL_SECTION_TEXTS;
   });
 
-  const [inquiries, setInquiries] = useState<AdmissionInquiry[]>([]);
+  const [inquiries, setInquiries] = useState<AdmissionInquiry[]>(() => {
+    const saved = localStorage.getItem(STORAGE_KEYS.INQUIRIES);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (e) {}
+    }
+    return INITIAL_INQUIRIES;
+  });
 
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.CALENDAR);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const hasCurrentYear = parsed.some((ev: CalendarEvent) =>
-            ev.month?.startsWith('2026') || ev.month?.startsWith('2027') || ev.dateRange?.includes('2026')
-          );
-          if (!hasCurrentYear) {
-            return INITIAL_CALENDAR_EVENTS;
-          }
-          return parsed;
-        }
-      } catch (e) {
-        // fallback
-      }
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch (e) {}
     }
     return INITIAL_CALENDAR_EVENTS;
   });
@@ -352,20 +315,15 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
           return DEFAULT_FEEDBACK_EMAIL_SETTINGS.map(def => {
-            const found = parsed.find((item: any) => 
-              item.tabKey === def.tabKey || 
+            const found = parsed.find((item: any) =>
+              item.tabKey === def.tabKey ||
               (def.tabKey === 'risk' && item.tabKey === 'complaint') ||
               (def.tabKey === 'bullying' && item.tabKey === 'admission')
             );
-            if (found && def.tabKey === 'bullying' && (found.tabKey === 'admission' || found.tabTitle === 'Элсэлт бүртгэл')) {
-              return { ...def, teacherEmail: found.teacherEmail || def.teacherEmail };
-            }
             return found ? { ...def, ...found, tabKey: def.tabKey } : def;
           });
         }
-      } catch (e) {
-        // fallback
-      }
+      } catch (e) {}
     }
     return DEFAULT_FEEDBACK_EMAIL_SETTINGS;
   });
@@ -378,34 +336,26 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         if (parsed && typeof parsed === 'object') {
           return { ...DEFAULT_SMTP_CONFIG, ...parsed };
         }
-      } catch (e) {
-        // fallback
-      }
+      } catch (e) {}
     }
     return DEFAULT_SMTP_CONFIG;
   });
 
-  const [isFirebaseConnected, setIsFirebaseConnected] = useState<boolean>(false);
-
   // Admin Authentication State
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.ADMIN_AUTH);
-    return saved === 'true';
+    return localStorage.getItem(STORAGE_KEYS.ADMIN_AUTH) === 'true';
   });
 
   const [adminUsername, setAdminUsername] = useState<string>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.ADMIN_USER);
-    return saved || 'admin';
+    return localStorage.getItem(STORAGE_KEYS.ADMIN_USER) || 'admin';
   });
 
   const [adminEmail, setAdminEmail] = useState<string>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.ADMIN_EMAIL);
-    return saved || 'jvkhln1@gmail.com';
+    return localStorage.getItem(STORAGE_KEYS.ADMIN_EMAIL) || 'jvkhln1@gmail.com';
   });
 
   const [adminPassword, setAdminPassword] = useState<string>(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.ADMIN_PASS);
-    return saved || 'admin123';
+    return localStorage.getItem(STORAGE_KEYS.ADMIN_PASS) || 'admin123';
   });
 
   // UI States
@@ -420,6 +370,518 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [isDedicatedNewsView, setIsDedicatedNewsView] = useState(false);
   const [isProgramsPortalView, setIsProgramsPortalView] = useState(false);
 
+  // Sync to localStorage
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.FEEDBACK_EMAILS, JSON.stringify(feedbackEmailSettings));
+  }, [feedbackEmailSettings]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.SMTP_CONFIG, JSON.stringify(smtpConfig));
+  }, [smtpConfig]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.CATEGORIES, JSON.stringify(categories));
+  }, [categories]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.INSTITUTIONAL_ARTICLES, JSON.stringify(institutionalArticles));
+  }, [institutionalArticles]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.SLIDES, JSON.stringify(heroSlides));
+  }, [heroSlides]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(programs));
+  }, [programs]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.NEWS, JSON.stringify(news));
+  }, [news]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.INFO, JSON.stringify(schoolInfo));
+  }, [schoolInfo]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.SECTION_TEXTS, JSON.stringify(sectionTexts));
+  }, [sectionTexts]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.INQUIRIES, JSON.stringify(inquiries));
+  }, [inquiries]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.CALENDAR, JSON.stringify(calendarEvents));
+  }, [calendarEvents]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.ADMIN_AUTH, String(isAdminAuthenticated));
+  }, [isAdminAuthenticated]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.ADMIN_USER, adminUsername);
+  }, [adminUsername]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.ADMIN_EMAIL, adminEmail);
+  }, [adminEmail]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.ADMIN_PASS, adminPassword);
+  }, [adminPassword]);
+
+  // Helper to detect Google API 401 / expired authentication credentials
+  const isAuthError = (err: any): boolean => {
+    if (!err) return false;
+    if (err instanceof GoogleAuthExpiredError || err.isAuthError || err.statusCode === 401) return true;
+    const msg = typeof err?.message === 'string' ? err.message : String(err);
+    return (
+      msg.includes('invalid authentication credentials') ||
+      msg.includes('Invalid Credentials') ||
+      msg.includes('UNAUTHENTICATED') ||
+      msg.includes('OAuth 2 access token') ||
+      msg.includes('401')
+    );
+  };
+
+  // Debounced auto-sync to Google Sheets when enabled
+  useEffect(() => {
+    if (!autoSyncToSheets || !spreadsheetId || !googleToken) return;
+
+    const timer = setTimeout(() => {
+      syncAllDataToSheet(googleToken, spreadsheetId, {
+        inquiries,
+        news,
+        programs,
+        calendarEvents,
+        heroSlides,
+        schoolInfo,
+        categories,
+        institutionalArticles
+      }).then(() => {
+        const now = new Date().toLocaleString('mn-MN');
+        setLastSheetsSyncTime(now);
+        localStorage.setItem(STORAGE_KEYS.LAST_SHEETS_SYNC, now);
+      }).catch(e => {
+        if (isAuthError(e)) {
+          setGoogleToken(null);
+          invalidateAccessToken();
+          console.warn('Auto-sync paused: Google credentials expired. Please re-authenticate.');
+        } else {
+          console.warn('Auto-sync to sheets notice:', e);
+        }
+      });
+    }, 4000);
+
+    return () => clearTimeout(timer);
+  }, [categories, institutionalArticles, news, programs, calendarEvents, heroSlides, schoolInfo, autoSyncToSheets, spreadsheetId, googleToken]);
+
+  // Automatic initial background fetch from Google Sheets if spreadsheetId is configured
+  useEffect(() => {
+    if (!spreadsheetId) return;
+
+    let isMounted = true;
+    const initialFetch = async () => {
+      try {
+        const token = googleToken || (await getAccessToken());
+        const data = await loadDataFromSheet(token, spreadsheetId);
+        if (!isMounted) return;
+
+        if (data.news && data.news.length > 0) setNews(data.news);
+        if (data.programs && data.programs.length > 0) setPrograms(data.programs);
+        if (data.calendarEvents && data.calendarEvents.length > 0) setCalendarEvents(data.calendarEvents);
+        if (data.heroSlides && data.heroSlides.length > 0) setHeroSlides(data.heroSlides);
+        if (data.categories && data.categories.length > 0) setCategories(data.categories);
+        if (data.institutionalArticles && data.institutionalArticles.length > 0) setInstitutionalArticles(data.institutionalArticles);
+        if (data.schoolInfo) setSchoolInfo(prev => ({ ...prev, ...data.schoolInfo }));
+
+        const now = new Date().toLocaleString('mn-MN');
+        setLastSheetsSyncTime(now);
+        localStorage.setItem(STORAGE_KEYS.LAST_SHEETS_SYNC, now);
+      } catch (err) {
+        console.warn('Google Sheets initial auto-load notice:', err);
+      }
+    };
+
+    initialFetch();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [spreadsheetId, googleToken]);
+
+  // Google Sheets Handlers
+  const loginWithGoogle = async () => {
+    try {
+      const result = await googleSignIn();
+      if (!result || result.cancelled) {
+        return { success: false, cancelled: true };
+      }
+      if (result.user && result.accessToken) {
+        setGoogleUser(result.user);
+        setGoogleToken(result.accessToken);
+
+        // If spreadsheetId is saved, check details
+        if (spreadsheetId) {
+          try {
+            const details = await getSpreadsheetDetails(result.accessToken, spreadsheetId);
+            setSpreadsheetTitle(details.title);
+          } catch (e) {
+            console.warn('Could not fetch existing sheet title', e);
+          }
+        }
+        return { success: true, user: result.user };
+      }
+      return { success: false, error: 'Нэвтрэлт цуцлагдсан', cancelled: true };
+    } catch (err: any) {
+      const isCancelled =
+        err?.code === 'auth/cancelled-popup-request' ||
+        err?.code === 'auth/popup-closed-by-user' ||
+        err?.message?.includes('cancelled-popup-request') ||
+        err?.message?.includes('popup-closed-by-user');
+
+      if (isCancelled) {
+        return { success: false, cancelled: true };
+      }
+
+      console.error('Google Sign in failed:', err);
+      const isUnauthorizedDomain =
+        err?.code === 'auth/unauthorized-domain' ||
+        err?.message?.includes('unauthorized-domain');
+
+      return {
+        success: false,
+        isUnauthorizedDomain,
+        error: isUnauthorizedDomain
+          ? `Энэ домэйн (${typeof window !== 'undefined' ? window.location.hostname : ''}) нь Firebase Authentication-д зөвшөөрөгдөөгүй байна (auth/unauthorized-domain).`
+          : err.message || 'Google-ээр нэвтрэхэд алдаа гарлаа'
+      };
+    }
+  };
+
+  const logoutFromGoogle = async () => {
+    await logoutGoogle();
+    setGoogleUser(null);
+    setGoogleToken(null);
+  };
+
+  const setAutoSyncToSheets = (val: boolean) => {
+    setAutoSyncToSheetsState(val);
+    localStorage.setItem(STORAGE_KEYS.AUTO_SHEETS_SYNC, String(val));
+  };
+
+  const updateSpreadsheetId = async (id: string) => {
+    const trimmed = id.trim();
+    // Extract ID if full URL was provided
+    let extractedId = trimmed;
+    const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    if (match) {
+      extractedId = match[1];
+    }
+
+    setSpreadsheetIdState(extractedId);
+    localStorage.setItem(STORAGE_KEYS.SPREADSHEET_ID, extractedId);
+
+    if (!extractedId) {
+      return { success: true, message: 'Google Sheets ID цэвэрлэгдлээ.' };
+    }
+
+    const token = googleToken || (await getAccessToken());
+    if (token) {
+      try {
+        const details = await getSpreadsheetDetails(token, extractedId);
+        setSpreadsheetTitle(details.title);
+        localStorage.setItem(STORAGE_KEYS.SPREADSHEET_TITLE, details.title);
+        return { success: true, title: details.title, message: `Хүснэгт амжилттай холбогдлоо: "${details.title}"` };
+      } catch (err: any) {
+        return { success: false, message: `Хүснэгтийн эрх шалгахад алдаа: ${err.message}` };
+      }
+    }
+
+    return { success: true, message: 'Google Sheets ID хадгалагдлаа. (Google-ээр нэвтэрч эрхээ шалгана уу)' };
+  };
+
+  const createNewSchoolSpreadsheet = async () => {
+    const token = googleToken || (await getAccessToken());
+    if (!token) {
+      return {
+        success: false,
+        message: 'Google Sheets үүсгэхийн тулд эхлээд "Sign in with Google" товчоор нэвтэрнэ үү.'
+      };
+    }
+
+    setIsSheetsSyncing(true);
+    try {
+      const res = await createSchoolSpreadsheet(token, schoolInfo.name || 'Эрдмийн Далай Цогцолбор Сургууль');
+      setSpreadsheetIdState(res.spreadsheetId);
+      setSpreadsheetTitle(res.title);
+      localStorage.setItem(STORAGE_KEYS.SPREADSHEET_ID, res.spreadsheetId);
+      localStorage.setItem(STORAGE_KEYS.SPREADSHEET_TITLE, res.title);
+
+      // Immediately sync current data
+      await syncAllDataToSheet(token, res.spreadsheetId, {
+        inquiries,
+        news,
+        programs,
+        calendarEvents,
+        heroSlides,
+        schoolInfo,
+        categories,
+        institutionalArticles
+      });
+
+      const now = new Date().toLocaleString('mn-MN');
+      setLastSheetsSyncTime(now);
+      localStorage.setItem(STORAGE_KEYS.LAST_SHEETS_SYNC, now);
+
+      return {
+        success: true,
+        spreadsheetId: res.spreadsheetId,
+        url: res.url,
+        message: `Google Sheets хүснэгт амжилттай үүсэж, бүх өгөгдөл хуулагдлаа!`
+      };
+    } catch (err: any) {
+      if (isAuthError(err)) {
+        setGoogleToken(null);
+        invalidateAccessToken();
+        console.warn('Create sheet notice (Google credentials expired):', err?.message || err);
+        return {
+          success: false,
+          isAuthExpired: true,
+          message: 'Google хандалтын эрхийн хугацаа дууссан байна. "Google-ээр холбогдох" товчоор дахин нэвтэрнэ үү.'
+        };
+      }
+      console.warn('Create sheet notice:', err);
+      return { success: false, message: err?.message || 'Хүснэгт үүсгэхэд алдаа гарлаа' };
+    } finally {
+      setIsSheetsSyncing(false);
+    }
+  };
+
+  const syncAllToGoogleSheets = async () => {
+    let token = googleToken || (await getAccessToken());
+    if (!token) {
+      return {
+        success: false,
+        isAuthExpired: true,
+        message: 'Google Sheets рүү илгээхийн тулд "Google-ээр холбогдох" товчоор нэвтэрнэ үү.'
+      };
+    }
+
+    let targetSheetId = spreadsheetId;
+    if (!targetSheetId) {
+      // Auto create if not exist
+      const createRes = await createNewSchoolSpreadsheet();
+      if (!createRes.success || !createRes.spreadsheetId) {
+        return { success: false, message: createRes.message };
+      }
+      targetSheetId = createRes.spreadsheetId;
+    }
+
+    setIsSheetsSyncing(true);
+    try {
+      await syncAllDataToSheet(token, targetSheetId, {
+        inquiries,
+        news,
+        programs,
+        calendarEvents,
+        heroSlides,
+        schoolInfo,
+        categories,
+        institutionalArticles
+      });
+
+      const now = new Date().toLocaleString('mn-MN');
+      setLastSheetsSyncTime(now);
+      localStorage.setItem(STORAGE_KEYS.LAST_SHEETS_SYNC, now);
+
+      return {
+        success: true,
+        message: 'Сургуулийн бүх мэдээлэл (хүсэлт, мэдээ, хөтөлбөр, хуанли, слайдер, танилцуулга, дэд цэсийн нийтлэл, sub-домайн холбоосууд) Google Sheets хүснэгтэд амжилттай хадгалагдлаа!'
+      };
+    } catch (err: any) {
+      if (isAuthError(err)) {
+        // Attempt silent token refresh
+        try {
+          const silentRes = await trySilentTokenRefresh();
+          if (silentRes?.accessToken) {
+            setGoogleToken(silentRes.accessToken);
+            if (silentRes.user) setGoogleUser(silentRes.user);
+            await syncAllDataToSheet(silentRes.accessToken, targetSheetId, {
+              inquiries,
+              news,
+              programs,
+              calendarEvents,
+              heroSlides,
+              schoolInfo,
+              categories,
+              institutionalArticles
+            });
+            const now = new Date().toLocaleString('mn-MN');
+            setLastSheetsSyncTime(now);
+            localStorage.setItem(STORAGE_KEYS.LAST_SHEETS_SYNC, now);
+            return {
+              success: true,
+              message: 'Google Sheets хүснэгтэд амжилттай хадгалагдлаа!'
+            };
+          }
+        } catch (silentErr) {
+          console.warn('Silent refresh attempt notice:', silentErr);
+        }
+
+        setGoogleToken(null);
+        invalidateAccessToken();
+        console.warn('Sync to sheets auth notice (credentials expired):', err?.message || err);
+        return {
+          success: false,
+          isAuthExpired: true,
+          message: 'Google хандалтын эрхийн хугацаа дууссан байна. "Google-ээр холбогдох" товчоор дахин нэвтэрнэ үү.'
+        };
+      }
+      console.warn('Sync to sheets notice:', err);
+      return { success: false, message: err?.message || 'Google Sheets рүү синк хийхэд алдаа гарлаа' };
+    } finally {
+      setIsSheetsSyncing(false);
+    }
+  };
+
+  const syncToSheetsWithData = async (customData?: Partial<SheetSyncData>) => {
+    let token = googleToken || (await getAccessToken());
+    if (!token) {
+      return {
+        success: false,
+        notConnected: true,
+        isAuthExpired: true,
+        message: 'Google Sheets рүү шууд хадгалахын тулд "Google-ээр холбогдох" товчоор нэвтэрнэ үү.'
+      };
+    }
+
+    const targetSheetId = spreadsheetId;
+    if (!targetSheetId) {
+      return {
+        success: false,
+        message: 'Google Sheets ID тохируулаагүй байна.'
+      };
+    }
+
+    setIsSheetsSyncing(true);
+    try {
+      await syncAllDataToSheet(token, targetSheetId, {
+        inquiries,
+        news,
+        programs,
+        calendarEvents,
+        heroSlides,
+        schoolInfo,
+        categories,
+        institutionalArticles,
+        ...(customData || {})
+      });
+
+      const now = new Date().toLocaleString('mn-MN');
+      setLastSheetsSyncTime(now);
+      localStorage.setItem(STORAGE_KEYS.LAST_SHEETS_SYNC, now);
+
+      return {
+        success: true,
+        message: 'Google Sheets баазад амжилттай хадгалагдлаа!'
+      };
+    } catch (err: any) {
+      if (isAuthError(err)) {
+        // Attempt silent token refresh
+        try {
+          const silentRes = await trySilentTokenRefresh();
+          if (silentRes?.accessToken) {
+            setGoogleToken(silentRes.accessToken);
+            if (silentRes.user) setGoogleUser(silentRes.user);
+            await syncAllDataToSheet(silentRes.accessToken, targetSheetId, {
+              inquiries,
+              news,
+              programs,
+              calendarEvents,
+              heroSlides,
+              schoolInfo,
+              categories,
+              institutionalArticles,
+              ...(customData || {})
+            });
+            const now = new Date().toLocaleString('mn-MN');
+            setLastSheetsSyncTime(now);
+            localStorage.setItem(STORAGE_KEYS.LAST_SHEETS_SYNC, now);
+            return {
+              success: true,
+              message: 'Google Sheets баазад амжилттай хадгалагдлаа!'
+            };
+          }
+        } catch (silentErr) {
+          console.warn('Silent refresh attempt notice:', silentErr);
+        }
+
+        setGoogleToken(null);
+        invalidateAccessToken();
+        console.warn('Save to sheets auth notice (credentials expired):', err?.message || err);
+        return {
+          success: false,
+          isAuthExpired: true,
+          message: 'Google хандалтын эрхийн хугацаа дууссан байна. "Google-ээр холбогдох" товчоор дахин нэвтэрнэ үү.'
+        };
+      }
+      console.warn('Save to sheets notice:', err);
+      return { success: false, message: err?.message || 'Google Sheets хадгалалт амжилтгүй боллоо' };
+    } finally {
+      setIsSheetsSyncing(false);
+    }
+  };
+
+  const loadAllFromGoogleSheets = async () => {
+    const token = googleToken || (await getAccessToken());
+    if (!spreadsheetId) {
+      return { success: false, message: 'Google Sheets ID тохируулаагүй байна.' };
+    }
+
+    setIsSheetsSyncing(true);
+    try {
+      const data = await loadDataFromSheet(token, spreadsheetId);
+      let count = 0;
+      if (data.news && data.news.length > 0) { setNews(data.news); count += data.news.length; }
+      if (data.programs && data.programs.length > 0) { setPrograms(data.programs); count += data.programs.length; }
+      if (data.calendarEvents && data.calendarEvents.length > 0) { setCalendarEvents(data.calendarEvents); count += data.calendarEvents.length; }
+      if (data.heroSlides && data.heroSlides.length > 0) { setHeroSlides(data.heroSlides); count += data.heroSlides.length; }
+      if (data.categories && data.categories.length > 0) { setCategories(data.categories); count += data.categories.length; }
+      if (data.institutionalArticles && data.institutionalArticles.length > 0) { setInstitutionalArticles(data.institutionalArticles); count += data.institutionalArticles.length; }
+      if (data.schoolInfo) setSchoolInfo(prev => ({ ...prev, ...data.schoolInfo }));
+
+      const now = new Date().toLocaleString('mn-MN');
+      setLastSheetsSyncTime(now);
+      localStorage.setItem(STORAGE_KEYS.LAST_SHEETS_SYNC, now);
+
+      return {
+        success: true,
+        message: `Google Sheets хүснэгтээс нийт ${count} өгөгдлийг амжилттай татаж вэбсайтыг шинэчиллээ!`
+      };
+    } catch (err: any) {
+      if (isAuthError(err)) {
+        setGoogleToken(null);
+        invalidateAccessToken();
+        console.warn('Load from sheets auth notice:', err?.message || err);
+        // Fallback to loading via public GViz without token
+        try {
+          const fallbackData = await loadDataFromSheet(null, spreadsheetId);
+          if (fallbackData.news || fallbackData.categories || fallbackData.programs) {
+            if (fallbackData.news && fallbackData.news.length > 0) setNews(fallbackData.news);
+            if (fallbackData.programs && fallbackData.programs.length > 0) setPrograms(fallbackData.programs);
+            if (fallbackData.calendarEvents && fallbackData.calendarEvents.length > 0) setCalendarEvents(fallbackData.calendarEvents);
+            if (fallbackData.heroSlides && fallbackData.heroSlides.length > 0) setHeroSlides(fallbackData.heroSlides);
+            if (fallbackData.categories && fallbackData.categories.length > 0) setCategories(fallbackData.categories);
+            if (fallbackData.institutionalArticles && fallbackData.institutionalArticles.length > 0) setInstitutionalArticles(fallbackData.institutionalArticles);
+            if (fallbackData.schoolInfo) setSchoolInfo(prev => ({ ...prev, ...fallbackData.schoolInfo }));
+            return {
+              success: true,
+              message: 'Google Sheets-ээс нийтийн холболтоор амжилттай уншлаа.'
+            };
+          }
+        } catch {
+          // ignore
+        }
+        return {
+          success: false,
+          message: 'Google хандалтын эрхийн хугацаа дууссан тул дахин нэвтэрнэ үү.'
+        };
+      }
+      console.warn('Load from sheets notice:', err);
+      return { success: false, message: err?.message || 'Google Sheets-ээс өгөгдөл татахад алдаа гарлаа' };
+    } finally {
+      setIsSheetsSyncing(false);
+    }
+  };
+
   const openProgramsPortal = (categorySlugOrAll?: string) => {
     if (categorySlugOrAll && categorySlugOrAll !== 'all') {
       setActiveCategory(categorySlugOrAll);
@@ -429,7 +891,6 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // Function to increment views and open news modal
   const openNewsArticle = (articleOrId: NewsArticle | string) => {
     let target: NewsArticle | undefined;
     if (typeof articleOrId === 'string') {
@@ -441,40 +902,24 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     if (!target) return;
 
-    // View counter increment logic per session
     const sessionKey = `viewed_news_${target.id}`;
     const alreadyViewed = sessionStorage.getItem(sessionKey);
-
     let updatedViews = target.views || 0;
     if (!alreadyViewed) {
       sessionStorage.setItem(sessionKey, 'true');
       updatedViews += 1;
-
-      // Update state locally
       setNews(prev => prev.map(item => item.id === target!.id ? { ...item, views: updatedViews } : item));
-
-      // Persist to Firestore
-      try {
-        setDoc(doc(db, 'news', target.id), { views: updatedViews }, { merge: true }).catch(err => {
-          console.warn('Firestore view counter update notice:', err);
-        });
-      } catch (e) {
-        console.warn('View counter sync error:', e);
-      }
     }
 
     const modalArticle = { ...target, views: updatedViews };
     setSelectedNewsModal(modalArticle);
 
-    // Update browser URL hash/permalink for direct sharing
     try {
       const newHash = `news/${target.slug || target.id}`;
       if (window.location.hash !== `#${newHash}`) {
         window.history.replaceState(null, '', `${window.location.pathname}#${newHash}`);
       }
-    } catch (e) {
-      // ignore in iframe
-    }
+    } catch (e) {}
   };
 
   const closeNewsModal = () => {
@@ -483,271 +928,10 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (window.location.hash.startsWith('#news/') || window.location.hash === '#news') {
         window.history.replaceState(null, '', window.location.pathname);
       }
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
   };
 
-  // Firestore Real-Time Subscriptions & Initialization
-  useEffect(() => {
-    let unsubSchoolInfo: (() => void) | undefined;
-    let unsubSectionTexts: (() => void) | undefined;
-    let unsubPrograms: (() => void) | undefined;
-    let unsubNews: (() => void) | undefined;
-    let unsubCategories: (() => void) | undefined;
-    let unsubSlides: (() => void) | undefined;
-    let unsubCalendar: (() => void) | undefined;
-    let unsubArticles: (() => void) | undefined;
-    let unsubFeedbackEmails: (() => void) | undefined;
-    let unsubSmtp: (() => void) | undefined;
-    let unsubAdminProfile: (() => void) | undefined;
-
-    // Safety timeout: Never keep the loading splash screen longer than 400ms
-    const safetyTimer = setTimeout(() => {
-      setIsInitialLoading(false);
-      try { localStorage.setItem('school_data_synced_v4', 'true'); } catch (e) {}
-    }, 400);
-
-    const loadedKeys = {
-      info: false,
-      slides: false,
-      news: false,
-      categories: false,
-    };
-
-    const markLoaded = (key: keyof typeof loadedKeys) => {
-      loadedKeys[key] = true;
-      if (loadedKeys.info && loadedKeys.slides && loadedKeys.news && loadedKeys.categories) {
-        setIsInitialLoading(false);
-        try { localStorage.setItem('school_data_synced_v4', 'true'); } catch (e) {}
-      }
-    };
-
-    try {
-      // 1. School Info listener
-      unsubSchoolInfo = onSnapshot(doc(db, 'settings', 'schoolInfo'), (snapshot) => {
-        if (snapshot.exists()) {
-          const data = snapshot.data() as SchoolInfo;
-          if (!data.defaultNewsImageUrl || data.defaultNewsImageUrl.includes('photo-1523240795612-9a054b0db644')) {
-            data.defaultNewsImageUrl = FALLBACK_IMAGE_URL;
-          }
-          setSchoolInfo(data);
-          setIsFirebaseConnected(true);
-        }
-        markLoaded('info');
-      }, (err) => {
-        handleFirestoreError(err, OperationType.GET, 'settings/schoolInfo');
-        markLoaded('info');
-      });
-
-      // 2. Section Texts listener
-      unsubSectionTexts = onSnapshot(doc(db, 'settings', 'sectionTexts'), (snapshot) => {
-        if (snapshot.exists()) {
-          const remoteData = snapshot.data() as Partial<SectionTexts>;
-          setSectionTexts(prev => ({ ...INITIAL_SECTION_TEXTS, ...prev, ...remoteData }));
-          setIsFirebaseConnected(true);
-        }
-      }, (err) => handleFirestoreError(err, OperationType.GET, 'settings/sectionTexts'));
-
-      // 3. Programs listener
-      unsubPrograms = onSnapshot(collection(db, 'programs'), (snapshot) => {
-        if (!snapshot.empty) {
-          const progs = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as SchoolProgram[];
-          setPrograms(progs);
-          setIsFirebaseConnected(true);
-        }
-      }, (err) => handleFirestoreError(err, OperationType.LIST, 'programs'));
-
-      // 4. News listener
-      unsubNews = onSnapshot(collection(db, 'news'), (snapshot) => {
-        if (!snapshot.empty) {
-          const items = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as NewsArticle[];
-          setNews(items);
-          setIsFirebaseConnected(true);
-        }
-        markLoaded('news');
-      }, (err) => {
-        handleFirestoreError(err, OperationType.LIST, 'news');
-        markLoaded('news');
-      });
-
-      // 5. Categories listener
-      unsubCategories = onSnapshot(collection(db, 'categories'), (snapshot) => {
-        if (!snapshot.empty) {
-          const cats = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as CategoryItem[];
-          setCategories(cats);
-          setIsFirebaseConnected(true);
-        }
-        markLoaded('categories');
-      }, (err) => {
-        handleFirestoreError(err, OperationType.LIST, 'categories');
-        markLoaded('categories');
-      });
-
-      // 6. Slides listener
-      unsubSlides = onSnapshot(collection(db, 'slides'), (snapshot) => {
-        if (!snapshot.empty) {
-          const s = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as HeroSlide[];
-          setHeroSlides(s);
-          setIsFirebaseConnected(true);
-        }
-        markLoaded('slides');
-      }, (err) => {
-        handleFirestoreError(err, OperationType.LIST, 'slides');
-        markLoaded('slides');
-      });
-
-      // 7. Calendar listener
-      unsubCalendar = onSnapshot(collection(db, 'calendar'), (snapshot) => {
-        if (!snapshot.empty) {
-          const events = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as CalendarEvent[];
-          setCalendarEvents(events);
-          setIsFirebaseConnected(true);
-        }
-      }, (err) => handleFirestoreError(err, OperationType.LIST, 'calendar'));
-
-      // 8. Institutional Articles listener
-      unsubArticles = onSnapshot(collection(db, 'institutional_articles'), (snapshot) => {
-        if (!snapshot.empty) {
-          const arts = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as InstitutionalArticle[];
-          setInstitutionalArticles(arts);
-          setIsFirebaseConnected(true);
-        }
-      }, (err) => handleFirestoreError(err, OperationType.LIST, 'institutional_articles'));
-
-      // 10. Feedback Email Routing Settings listener
-      unsubFeedbackEmails = onSnapshot(doc(db, 'settings', 'feedbackEmails'), (snapshot) => {
-        if (snapshot.exists()) {
-          const data = snapshot.data();
-          if (data && Array.isArray(data.items) && data.items.length > 0) {
-            const merged = DEFAULT_FEEDBACK_EMAIL_SETTINGS.map(def => {
-              const found = data.items.find((it: any) => 
-                it.tabKey === def.tabKey || 
-                (def.tabKey === 'risk' && it.tabKey === 'complaint') ||
-                (def.tabKey === 'bullying' && it.tabKey === 'admission')
-              );
-              if (found && def.tabKey === 'bullying' && (found.tabKey === 'admission' || found.tabTitle === 'Элсэлт бүртгэл')) {
-                return { ...def, teacherEmail: found.teacherEmail || def.teacherEmail };
-              }
-              return found ? { ...def, ...found, tabKey: def.tabKey } : def;
-            });
-            setFeedbackEmailSettings(merged);
-            setIsFirebaseConnected(true);
-          }
-        }
-      }, (err) => handleFirestoreError(err, OperationType.GET, 'settings/feedbackEmails'));
-
-      // 11. SMTP Config Settings listener
-      unsubSmtp = onSnapshot(doc(db, 'settings', 'smtpConfig'), (snapshot) => {
-        if (snapshot.exists()) {
-          const data = snapshot.data();
-          if (data && typeof data === 'object') {
-            setSmtpConfig(prev => ({ ...prev, ...data }));
-            setIsFirebaseConnected(true);
-          }
-        }
-      }, (err) => handleFirestoreError(err, OperationType.GET, 'settings/smtpConfig'));
-
-      // 12. Admin Profile listener (Username & Email)
-      unsubAdminProfile = onSnapshot(doc(db, 'settings', 'adminProfile'), (snapshot) => {
-        if (snapshot.exists()) {
-          const data = snapshot.data();
-          if (data && typeof data === 'object') {
-            if (data.username) setAdminUsername(data.username);
-            if (data.email) setAdminEmail(data.email);
-            setIsFirebaseConnected(true);
-          }
-        }
-      }, (err) => handleFirestoreError(err, OperationType.GET, 'settings/adminProfile'));
-
-    } catch (e) {
-      console.warn('Firestore subscription initialized with offline fallback', e);
-    }
-
-    return () => {
-      clearTimeout(safetyTimer);
-      if (unsubSchoolInfo) unsubSchoolInfo();
-      if (unsubSectionTexts) unsubSectionTexts();
-      if (unsubPrograms) unsubPrograms();
-      if (unsubNews) unsubNews();
-      if (unsubCategories) unsubCategories();
-      if (unsubSlides) unsubSlides();
-      if (unsubCalendar) unsubCalendar();
-      if (unsubArticles) unsubArticles();
-      if (unsubFeedbackEmails) unsubFeedbackEmails();
-      if (unsubSmtp) unsubSmtp();
-      if (unsubAdminProfile) unsubAdminProfile();
-    };
-  }, []);
-
-  // Persist to localStorage as instant cache
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.FEEDBACK_EMAILS, JSON.stringify(feedbackEmailSettings));
-  }, [feedbackEmailSettings]);
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.SMTP_CONFIG, JSON.stringify(smtpConfig));
-  }, [smtpConfig]);
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.CATEGORIES, JSON.stringify(categories));
-  }, [categories]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.INSTITUTIONAL_ARTICLES, JSON.stringify(institutionalArticles));
-  }, [institutionalArticles]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.SLIDES, JSON.stringify(heroSlides));
-    } catch (e) {
-      console.warn('LocalStorage error saving slides', e);
-    }
-  }, [heroSlides]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(programs));
-    } catch (e) {
-      console.warn('LocalStorage error saving programs', e);
-    }
-  }, [programs]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.NEWS, JSON.stringify(news));
-    } catch (e) {
-      console.warn('LocalStorage error saving news', e);
-    }
-  }, [news]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.INFO, JSON.stringify(schoolInfo));
-  }, [schoolInfo]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.SECTION_TEXTS, JSON.stringify(sectionTexts));
-  }, [sectionTexts]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.CALENDAR, JSON.stringify(calendarEvents));
-  }, [calendarEvents]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.ADMIN_AUTH, String(isAdminAuthenticated));
-  }, [isAdminAuthenticated]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.ADMIN_USER, adminUsername);
-  }, [adminUsername]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.ADMIN_EMAIL, adminEmail);
-  }, [adminEmail]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.ADMIN_PASS, adminPassword);
-  }, [adminPassword]);
-
-  // URL Hash and Direct Sub-domain / Permalink Routing Listener
+  // URL Hash routing
   useEffect(() => {
     const handleUrlRouting = () => {
       try {
@@ -767,43 +951,33 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
         if (hash.startsWith('#news/')) {
           const newsSlugOrId = hash.replace('#news/', '').trim();
-          if (newsSlugOrId) {
-            openNewsArticle(newsSlugOrId);
-          }
+          if (newsSlugOrId) openNewsArticle(newsSlugOrId);
         } else if (hash.startsWith('#article/')) {
           const artSlugOrId = hash.replace('#article/', '').trim();
           if (artSlugOrId) {
             const foundArt = institutionalArticles.find(a => a.id === artSlugOrId || a.slug === artSlugOrId);
-            if (foundArt) {
-              setSelectedArticleModal(foundArt);
-            }
+            if (foundArt) setSelectedArticleModal(foundArt);
           }
         } else if (hash.startsWith('#program/')) {
           const progSlugOrId = hash.replace('#program/', '').trim();
           if (progSlugOrId) {
             const foundProg = programs.find(p => p.id === progSlugOrId || p.slug === progSlugOrId);
-            if (foundProg) {
-              setSelectedProgramModal(foundProg);
-            }
+            if (foundProg) setSelectedProgramModal(foundProg);
           }
-        } else if (hash === '#programs-portal' || hash === '#programs-subdomain' || hash === '#programs-all' || hash === '#programs-hub') {
+        } else if (hash === '#programs-portal' || hash === '#programs-subdomain' || hash === '#programs-all') {
           setIsProgramsPortalView(true);
         } else if (hash === '#all-news' || hash === '#news-all') {
           setIsDedicatedNewsView(true);
         } else if (hash === '#news') {
-          // Normal news section scroll
           const el = document.getElementById('news');
           if (el) el.scrollIntoView({ behavior: 'smooth' });
         } else if (hash === '#programs') {
           const el = document.getElementById('programs');
           if (el) el.scrollIntoView({ behavior: 'smooth' });
         }
-      } catch (e) {
-        console.warn('URL routing parse notice:', e);
-      }
+      } catch (e) {}
     };
 
-    // Run once on load and listen to hashchange
     handleUrlRouting();
     window.addEventListener('hashchange', handleUrlRouting);
     return () => window.removeEventListener('hashchange', handleUrlRouting);
@@ -848,16 +1022,6 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     localStorage.setItem(STORAGE_KEYS.ADMIN_USER, trimmedUser);
     localStorage.setItem(STORAGE_KEYS.ADMIN_EMAIL, trimmedEmail);
 
-    try {
-      await setDoc(doc(db, 'settings', 'adminProfile'), {
-        username: trimmedUser,
-        email: trimmedEmail,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-    } catch (e) {
-      console.warn('Could not sync adminProfile to Firestore', e);
-    }
-
     return { success: true, message: 'Админ хэрэглэгчийн нэр болон имэйл амжилттай хадгалагдлаа!' };
   };
 
@@ -883,14 +1047,6 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       localStorage.setItem(STORAGE_KEYS.ADMIN_EMAIL, updatedEmail);
     }
 
-    try {
-      setDoc(doc(db, 'settings', 'adminProfile'), {
-        username: updatedUser,
-        email: updatedEmail,
-        updatedAt: new Date().toISOString()
-      }, { merge: true }).catch(() => {});
-    } catch (e) {}
-
     return { success: true, message: 'Админы мэдээлэл болон нууц үг амжилттай солигдлоо!' };
   };
 
@@ -904,10 +1060,12 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   // News CRUD Actions
-  const addNewsArticle = async (newArt: Omit<NewsArticle, 'id' | 'createdAt' | 'views'>) => {
+  const addNewsArticle = (newArt: Omit<NewsArticle, 'id' | 'createdAt' | 'views'>) => {
     const newId = 'news-' + Date.now();
-    const primaryImg = newArt.imageUrl || (newArt.images && newArt.images[0]) || schoolInfo.defaultNewsImageUrl || FALLBACK_IMAGE_URL;
-    const finalImages = Array.isArray(newArt.images) && newArt.images.length > 0 ? newArt.images : [primaryImg];
+    const primaryImg = formatGoogleDriveImageUrl(newArt.imageUrl || (newArt.images && newArt.images[0]) || schoolInfo.defaultNewsImageUrl || FALLBACK_IMAGE_URL);
+    const finalImages = Array.isArray(newArt.images) && newArt.images.length > 0 
+      ? newArt.images.map(img => formatGoogleDriveImageUrl(img)) 
+      : [primaryImg];
 
     const newItem: NewsArticle = {
       ...newArt,
@@ -919,39 +1077,42 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       views: 0,
       createdAt: new Date().toISOString()
     };
-    setNews(prev => [newItem, ...prev]);
-    try {
-      const sanitized = cleanForFirestore(newItem);
-      await setDoc(doc(db, 'news', newId), sanitized);
-    } catch (e) {
-      handleFirestoreError(e, OperationType.CREATE, `news/${newId}`);
+    const updatedNews = [newItem, ...news];
+    setNews(updatedNews);
+
+    // Auto-save to Google Sheets database immediately
+    if (spreadsheetId) {
+      syncToSheetsWithData({ news: updatedNews }).catch(e => console.warn('Auto news sync notice:', e));
     }
   };
 
-  const updateNewsArticle = async (id: string, updated: Partial<NewsArticle>) => {
-    setNews(prev => prev.map(item => (item.id === id ? { ...item, ...updated } : item)));
-    try {
-      const existing = news.find(n => n.id === id);
-      if (existing) {
-        const merged = cleanForFirestore({ ...existing, ...updated });
-        await setDoc(doc(db, 'news', id), merged, { merge: true });
-      }
-    } catch (e) {
-      handleFirestoreError(e, OperationType.UPDATE, `news/${id}`);
+  const updateNewsArticle = (id: string, updated: Partial<NewsArticle>) => {
+    const sanitizedUpdated: Partial<NewsArticle> = {
+      ...updated,
+      ...(updated.imageUrl ? { imageUrl: formatGoogleDriveImageUrl(updated.imageUrl) } : {}),
+      ...(updated.images ? { images: updated.images.map(img => formatGoogleDriveImageUrl(img)) } : {})
+    };
+    const updatedNews = news.map(item => (item.id === id ? { ...item, ...sanitizedUpdated } : item));
+    setNews(updatedNews);
+
+    // Auto-save to Google Sheets database immediately
+    if (spreadsheetId) {
+      syncToSheetsWithData({ news: updatedNews }).catch(e => console.warn('Auto news sync notice:', e));
     }
   };
 
-  const deleteNewsArticle = async (id: string) => {
-    setNews(prev => prev.filter(item => item.id !== id));
-    try {
-      await deleteDoc(doc(db, 'news', id));
-    } catch (e) {
-      handleFirestoreError(e, OperationType.DELETE, `news/${id}`);
+  const deleteNewsArticle = (id: string) => {
+    const updatedNews = news.filter(item => item.id !== id);
+    setNews(updatedNews);
+
+    // Auto-save to Google Sheets database immediately
+    if (spreadsheetId) {
+      syncToSheetsWithData({ news: updatedNews }).catch(e => console.warn('Auto news sync notice:', e));
     }
   };
 
   // Programs CRUD Actions
-  const addProgram = async (newProg: Omit<SchoolProgram, 'id' | 'createdAt'>) => {
+  const addProgram = (newProg: Omit<SchoolProgram, 'id' | 'createdAt'>) => {
     const newId = 'prog-' + Date.now();
     const newItem: SchoolProgram = {
       ...newProg,
@@ -959,187 +1120,157 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       createdAt: new Date().toISOString()
     };
     setPrograms(prev => [...prev, newItem]);
-    try {
-      await setDoc(doc(db, 'programs', newId), newItem);
-    } catch (e) {
-      handleFirestoreError(e, OperationType.CREATE, `programs/${newId}`);
-    }
   };
 
-  const updateProgram = async (id: string, updated: Partial<SchoolProgram>) => {
+  const updateProgram = (id: string, updated: Partial<SchoolProgram>) => {
     setPrograms(prev => prev.map(item => (item.id === id ? { ...item, ...updated } : item)));
-    try {
-      const existing = programs.find(p => p.id === id);
-      if (existing) {
-        await setDoc(doc(db, 'programs', id), { ...existing, ...updated }, { merge: true });
-      }
-    } catch (e) {
-      handleFirestoreError(e, OperationType.UPDATE, `programs/${id}`);
-    }
   };
 
-  const deleteProgram = async (id: string) => {
+  const deleteProgram = (id: string) => {
     setPrograms(prev => prev.filter(item => item.id !== id));
-    try {
-      await deleteDoc(doc(db, 'programs', id));
-    } catch (e) {
-      handleFirestoreError(e, OperationType.DELETE, `programs/${id}`);
-    }
   };
 
   // Hero Slides CRUD
-  const addHeroSlide = async (slide: Omit<HeroSlide, 'id'>) => {
+  const addHeroSlide = (slide: Omit<HeroSlide, 'id'>) => {
     const newId = 'slide-' + Date.now();
     const newItem: HeroSlide = {
       ...slide,
       id: newId
     };
     setHeroSlides(prev => [...prev, newItem]);
-    try {
-      await setDoc(doc(db, 'slides', newId), newItem);
-    } catch (e) {
-      handleFirestoreError(e, OperationType.CREATE, `slides/${newId}`);
-    }
   };
 
-  const updateHeroSlide = async (id: string, updated: Partial<HeroSlide>) => {
+  const updateHeroSlide = (id: string, updated: Partial<HeroSlide>) => {
     setHeroSlides(prev => prev.map(item => (item.id === id ? { ...item, ...updated } : item)));
-    try {
-      const existing = heroSlides.find(s => s.id === id);
-      if (existing) {
-        await setDoc(doc(db, 'slides', id), { ...existing, ...updated }, { merge: true });
-      }
-    } catch (e) {
-      handleFirestoreError(e, OperationType.UPDATE, `slides/${id}`);
-    }
   };
 
-  const deleteHeroSlide = async (id: string) => {
+  const deleteHeroSlide = (id: string) => {
     setHeroSlides(prev => prev.filter(item => item.id !== id));
-    try {
-      await deleteDoc(doc(db, 'slides', id));
-    } catch (e) {
-      handleFirestoreError(e, OperationType.DELETE, `slides/${id}`);
-    }
   };
 
   // Categories CRUD
-  const addCategory = async (cat: Omit<CategoryItem, 'id'>) => {
+  const addCategory = (cat: Omit<CategoryItem, 'id'>) => {
     const newId = 'cat-' + Date.now();
     const newItem: CategoryItem = {
       ...cat,
       id: newId
     };
-    setCategories(prev => [...prev, newItem]);
-    try {
-      await setDoc(doc(db, 'categories', newId), newItem);
-    } catch (e) {
-      handleFirestoreError(e, OperationType.CREATE, `categories/${newId}`);
+    const updatedCats = [...categories, newItem];
+    setCategories(updatedCats);
+
+    // Auto-save to Google Sheets database immediately
+    if (spreadsheetId) {
+      syncToSheetsWithData({ categories: updatedCats }).catch(e => console.warn('Auto cat sync notice:', e));
     }
   };
 
-  const updateCategory = async (id: string, updated: Partial<CategoryItem>) => {
-    setCategories(prev => prev.map(item => (item.id === id ? { ...item, ...updated } : item)));
-    try {
-      const existing = categories.find(c => c.id === id);
-      if (existing) {
-        await setDoc(doc(db, 'categories', id), { ...existing, ...updated }, { merge: true });
-      }
-    } catch (e) {
-      handleFirestoreError(e, OperationType.UPDATE, `categories/${id}`);
+  const updateCategory = (id: string, updated: Partial<CategoryItem>) => {
+    const updatedCats = categories.map(item => (item.id === id ? { ...item, ...updated } : item));
+    setCategories(updatedCats);
+
+    // Auto-save to Google Sheets database immediately
+    if (spreadsheetId) {
+      syncToSheetsWithData({ categories: updatedCats }).catch(e => console.warn('Auto cat sync notice:', e));
     }
   };
 
-  const deleteCategory = async (id: string) => {
-    setCategories(prev => prev.filter(item => item.id !== id));
-    try {
-      await deleteDoc(doc(db, 'categories', id));
-    } catch (e) {
-      handleFirestoreError(e, OperationType.DELETE, `categories/${id}`);
+  const deleteCategory = (id: string) => {
+    const updatedCats = categories.filter(item => item.id !== id);
+    setCategories(updatedCats);
+
+    // Auto-save to Google Sheets database immediately
+    if (spreadsheetId) {
+      syncToSheetsWithData({ categories: updatedCats }).catch(e => console.warn('Auto cat sync notice:', e));
     }
   };
 
   // School Info & Section Texts
-  const updateSchoolInfo = async (info: Partial<SchoolInfo>) => {
-    const updated = { ...schoolInfo, ...info };
-    setSchoolInfo(updated);
-    try {
-      const sanitized = cleanForFirestore(updated);
-      await setDoc(doc(db, 'settings', 'schoolInfo'), sanitized, { merge: true });
-    } catch (e) {
-      handleFirestoreError(e, OperationType.WRITE, 'settings/schoolInfo');
-    }
+  const updateSchoolInfo = (info: Partial<SchoolInfo>) => {
+    setSchoolInfo(prev => ({ ...prev, ...info }));
   };
 
-  const updateSectionTexts = async (texts: Partial<SectionTexts>) => {
-    const updated = { ...sectionTexts, ...texts };
-    setSectionTexts(updated);
-    try {
-      await setDoc(doc(db, 'settings', 'sectionTexts'), updated, { merge: true });
-    } catch (e) {
-      handleFirestoreError(e, OperationType.WRITE, 'settings/sectionTexts');
-    }
+  const updateSectionTexts = (texts: Partial<SectionTexts>) => {
+    setSectionTexts(prev => ({ ...prev, ...texts }));
   };
 
-  // Admission & Feedback Direct Email Dispatch (Only sent to designated email, not saved to admin)
-  const submitAdmissionInquiry = async (inquiry: Omit<AdmissionInquiry, 'id' | 'createdAt' | 'status'>) => {
-    const targetRecipient = feedbackEmailSettings.find(f => f.tabKey === inquiry.type)
+  // Admission & Feedback Direct Submission & Google Sheets dispatch
+  const submitAdmissionInquiry = async (inquiryData: Omit<AdmissionInquiry, 'id' | 'createdAt' | 'status'>) => {
+    const newId = 'inq-' + Date.now();
+    const newInquiry: AdmissionInquiry = {
+      ...inquiryData,
+      id: newId,
+      createdAt: new Date().toISOString(),
+      status: 'new'
+    };
+
+    // 1. Add to local inquiries list
+    setInquiries(prev => [newInquiry, ...prev]);
+
+    // 2. If Google Sheets is connected, write to spreadsheet immediately
+    let sheetAppendSuccess = false;
+    const token = googleToken || (await getAccessToken());
+    if (token && spreadsheetId) {
+      try {
+        await appendInquiryToSheet(token, spreadsheetId, newInquiry);
+        sheetAppendSuccess = true;
+      } catch (sheetErr) {
+        console.warn('Google Sheets append notice:', sheetErr);
+      }
+    }
+
+    // 3. Dispatch direct email notification to responsible staff/teacher
+    const targetRecipient = feedbackEmailSettings.find(f => f.tabKey === inquiryData.type)
       || feedbackEmailSettings.find(f => f.tabKey === 'feedback')
       || DEFAULT_FEEDBACK_EMAIL_SETTINGS[0];
 
-    const recipientEmail = (inquiry.recipientEmail || targetRecipient?.teacherEmail || '').trim();
-    const recipientName = inquiry.recipientName || targetRecipient?.teacherName || 'Хариуцсан ажилтан';
-    const recipientRole = inquiry.recipientRole || targetRecipient?.teacherRole || 'Ажилтан';
+    const recipientEmail = (inquiryData.recipientEmail || targetRecipient?.teacherEmail || '').trim();
+    const recipientName = inquiryData.recipientName || targetRecipient?.teacherName || 'Хариуцсан ажилтан';
+    const recipientRole = inquiryData.recipientRole || targetRecipient?.teacherRole || 'Ажилтан';
 
-    if (!recipientEmail) {
-      return {
-        success: false,
-        error: 'Энэхүү чиглэлд хүлээн авах хариуцсан багш, ажилтны имэйл хаяг тохируулаагүй байна. Админ тохиргооноос имэйл хаяг оруулна уу.'
-      };
-    }
-
-    // Call server email dispatch API directly to the assigned user/staff
     try {
-      const resp = await fetch('/api/send-email', {
+      const emailResp = await fetch('/api/send-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           recipientEmail,
           recipientName,
           recipientRole,
-          senderName: inquiry.name,
-          studentName: inquiry.studentName || inquiry.name,
-          senderPhone: inquiry.phone,
-          senderEmail: inquiry.email,
-          type: inquiry.type,
-          typeTitle: targetRecipient?.tabTitle || (inquiry.type === 'risk' ? 'Эрсдлийн үнэлгээ' : inquiry.type === 'bullying' ? 'Үе тэнгийн дээрэлхэлт' : 'Санал хүсэлт'),
-          message: inquiry.message,
-          gradeLevel: inquiry.gradeLevel,
-          programInterest: inquiry.programInterest,
-          riskLevel: inquiry.riskLevel,
-          riskCategory: inquiry.riskCategory,
-          location: inquiry.location,
-          imageUrl: inquiry.imageUrl,
-          isAnonymous: inquiry.isAnonymous,
+          senderName: inquiryData.name,
+          studentName: inquiryData.studentName || inquiryData.name,
+          senderPhone: inquiryData.phone,
+          senderEmail: inquiryData.email,
+          type: inquiryData.type,
+          typeTitle: targetRecipient?.tabTitle || (inquiryData.type === 'risk' ? 'Эрсдлийн үнэлгээ' : inquiryData.type === 'bullying' ? 'Үе тэнгийн дээрэлхэлт' : 'Санал хүсэлт'),
+          message: inquiryData.message,
+          gradeLevel: inquiryData.gradeLevel,
+          programInterest: inquiryData.programInterest,
+          riskLevel: inquiryData.riskLevel,
+          riskCategory: inquiryData.riskCategory,
+          location: inquiryData.location,
+          imageUrl: inquiryData.imageUrl,
+          isAnonymous: inquiryData.isAnonymous,
           smtpConfig: smtpConfig?.enabled ? smtpConfig : undefined
         })
       });
 
-      const resJson = await resp.json();
-      return resJson;
-    } catch (sendErr: any) {
-      console.warn('Failed to dispatch /api/send-email:', sendErr);
-      return { success: false, error: sendErr.message || 'Имэйл илгээхэд сүлжээний алдаа гарлаа' };
+      const resJson = await emailResp.json().catch(() => ({ success: true }));
+      return {
+        ...resJson,
+        sheetRecorded: sheetAppendSuccess,
+        spreadsheetUrl: spreadsheetUrl || undefined
+      };
+    } catch (e: any) {
+      return {
+        success: true,
+        sheetRecorded: sheetAppendSuccess,
+        spreadsheetUrl: spreadsheetUrl || undefined,
+        message: 'Хүсэлт амжилттай бүртгэгдлээ.'
+      };
     }
   };
 
   const updateSmtpConfig = async (newConfig: SmtpConfig) => {
     setSmtpConfig(newConfig);
-    try {
-      await setDoc(doc(db, 'settings', 'smtpConfig'), newConfig);
-    } catch (e) {
-      handleFirestoreError(e, OperationType.WRITE, 'settings/smtpConfig');
-    }
   };
 
   const sendDirectEmail = async (payload: any) => {
@@ -1160,11 +1291,6 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const updateFeedbackEmailSettings = async (settings: FeedbackEmailSetting[]) => {
     setFeedbackEmailSettings(settings);
-    try {
-      await setDoc(doc(db, 'settings', 'feedbackEmails'), { items: settings });
-    } catch (e) {
-      handleFirestoreError(e, OperationType.WRITE, 'settings/feedbackEmails');
-    }
   };
 
   const updateFeedbackTabEmail = async (tabKey: string, updated: Partial<FeedbackEmailSetting>) => {
@@ -1188,58 +1314,30 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     await updateFeedbackEmailSettings(updatedList);
   };
 
-  const updateInquiryStatus = async (id: string, status: AdmissionInquiry['status']) => {
+  const updateInquiryStatus = (id: string, status: AdmissionInquiry['status']) => {
     setInquiries(prev => prev.map(item => (item.id === id ? { ...item, status } : item)));
-    try {
-      await setDoc(doc(db, 'inquiries', id), { status }, { merge: true });
-    } catch (e) {
-      handleFirestoreError(e, OperationType.UPDATE, `inquiries/${id}`);
-    }
   };
 
-  const deleteInquiry = async (id: string) => {
+  const deleteInquiry = (id: string) => {
     setInquiries(prev => prev.filter(item => item.id !== id));
-    try {
-      await deleteDoc(doc(db, 'inquiries', id));
-    } catch (e) {
-      handleFirestoreError(e, OperationType.DELETE, `inquiries/${id}`);
-    }
   };
 
   // Academic Calendar Plan CRUD
-  const addCalendarEvent = async (event: Omit<CalendarEvent, 'id'>) => {
+  const addCalendarEvent = (event: Omit<CalendarEvent, 'id'>) => {
     const newId = 'cal-' + Date.now();
     const newItem: CalendarEvent = {
       ...event,
       id: newId
     };
     setCalendarEvents(prev => [...prev, newItem]);
-    try {
-      await setDoc(doc(db, 'calendar', newId), newItem);
-    } catch (e) {
-      handleFirestoreError(e, OperationType.CREATE, `calendar/${newId}`);
-    }
   };
 
-  const updateCalendarEvent = async (id: string, updated: Partial<CalendarEvent>) => {
+  const updateCalendarEvent = (id: string, updated: Partial<CalendarEvent>) => {
     setCalendarEvents(prev => prev.map(item => (item.id === id ? { ...item, ...updated } : item)));
-    try {
-      const existing = calendarEvents.find(c => c.id === id);
-      if (existing) {
-        await setDoc(doc(db, 'calendar', id), { ...existing, ...updated }, { merge: true });
-      }
-    } catch (e) {
-      handleFirestoreError(e, OperationType.UPDATE, `calendar/${id}`);
-    }
   };
 
-  const deleteCalendarEvent = async (id: string) => {
+  const deleteCalendarEvent = (id: string) => {
     setCalendarEvents(prev => prev.filter(item => item.id !== id));
-    try {
-      await deleteDoc(doc(db, 'calendar', id));
-    } catch (e) {
-      handleFirestoreError(e, OperationType.DELETE, `calendar/${id}`);
-    }
   };
 
   // Institutional Articles CRUD & Helpers
@@ -1250,41 +1348,54 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
-  const addInstitutionalArticle = async (newArt: Omit<InstitutionalArticle, 'id'>) => {
+  const addInstitutionalArticle = (newArt: Omit<InstitutionalArticle, 'id'>) => {
     const newId = 'art-' + (newArt.slug || Date.now());
+    const primaryCover = formatGoogleDriveImageUrl(newArt.coverImage);
+    const finalImages = Array.isArray(newArt.images) && newArt.images.length > 0
+      ? newArt.images.map(img => formatGoogleDriveImageUrl(img))
+      : (primaryCover ? [primaryCover] : undefined);
+
     const newItem: InstitutionalArticle = {
       ...newArt,
-      id: newId
+      id: newId,
+      coverImage: primaryCover,
+      images: finalImages
     };
-    setInstitutionalArticles(prev => [...prev, newItem]);
-    try {
-      await setDoc(doc(db, 'institutional_articles', newId), newItem);
-    } catch (e) {
-      handleFirestoreError(e, OperationType.CREATE, `institutional_articles/${newId}`);
+    const updatedArts = [...institutionalArticles, newItem];
+    setInstitutionalArticles(updatedArts);
+
+    // Auto-save to Google Sheets database immediately
+    if (spreadsheetId) {
+      syncToSheetsWithData({ institutionalArticles: updatedArts }).catch(e => console.warn('Auto art sync notice:', e));
     }
   };
 
-  const updateInstitutionalArticle = async (id: string, updated: Partial<InstitutionalArticle>) => {
-    setInstitutionalArticles(prev => prev.map(item => (item.id === id ? { ...item, ...updated } : item)));
+  const updateInstitutionalArticle = (id: string, updated: Partial<InstitutionalArticle>) => {
+    const sanitizedUpdated: Partial<InstitutionalArticle> = {
+      ...updated,
+      ...(updated.coverImage ? { coverImage: formatGoogleDriveImageUrl(updated.coverImage) } : {}),
+      ...(updated.images ? { images: updated.images.map(img => formatGoogleDriveImageUrl(img)) } : {})
+    };
+    const updatedArts = institutionalArticles.map(item => (item.id === id ? { ...item, ...sanitizedUpdated } : item));
+    setInstitutionalArticles(updatedArts);
+
     if (selectedArticleModal && selectedArticleModal.id === id) {
-      setSelectedArticleModal(prev => (prev ? { ...prev, ...updated } : null));
+      setSelectedArticleModal(prev => (prev ? { ...prev, ...sanitizedUpdated } : null));
     }
-    try {
-      const existing = institutionalArticles.find(n => n.id === id);
-      if (existing) {
-        await setDoc(doc(db, 'institutional_articles', id), { ...existing, ...updated }, { merge: true });
-      }
-    } catch (e) {
-      handleFirestoreError(e, OperationType.UPDATE, `institutional_articles/${id}`);
+
+    // Auto-save to Google Sheets database immediately
+    if (spreadsheetId) {
+      syncToSheetsWithData({ institutionalArticles: updatedArts }).catch(e => console.warn('Auto art sync notice:', e));
     }
   };
 
-  const deleteInstitutionalArticle = async (id: string) => {
-    setInstitutionalArticles(prev => prev.filter(item => item.id !== id));
-    try {
-      await deleteDoc(doc(db, 'institutional_articles', id));
-    } catch (e) {
-      handleFirestoreError(e, OperationType.DELETE, `institutional_articles/${id}`);
+  const deleteInstitutionalArticle = (id: string) => {
+    const updatedArts = institutionalArticles.filter(item => item.id !== id);
+    setInstitutionalArticles(updatedArts);
+
+    // Auto-save to Google Sheets database immediately
+    if (spreadsheetId) {
+      syncToSheetsWithData({ institutionalArticles: updatedArts }).catch(e => console.warn('Auto art sync notice:', e));
     }
   };
 
@@ -1314,6 +1425,7 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       calendarEvents,
       institutionalArticles,
       feedbackEmailSettings,
+      spreadsheetId,
       exportedAt: new Date().toISOString()
     };
     return JSON.stringify(fullData, null, 2);
@@ -1332,6 +1444,7 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (parsed.calendarEvents) setCalendarEvents(parsed.calendarEvents);
       if (parsed.institutionalArticles) setInstitutionalArticles(parsed.institutionalArticles);
       if (parsed.feedbackEmailSettings) setFeedbackEmailSettings(parsed.feedbackEmailSettings);
+      if (parsed.spreadsheetId) setSpreadsheetIdState(parsed.spreadsheetId);
       return true;
     } catch (e) {
       console.error('Failed to parse import JSON', e);
@@ -1363,10 +1476,30 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         adminUsername,
         adminEmail,
         searchQuery,
-        isFirebaseConnected,
         isInitialLoading,
         isDedicatedNewsView,
         isProgramsPortalView,
+
+        // Google Sheets Integration
+        googleUser,
+        googleToken,
+        isGoogleConnected,
+        spreadsheetId,
+        spreadsheetTitle,
+        spreadsheetUrl,
+        isSheetsSyncing,
+        lastSheetsSyncTime,
+        autoSyncToSheets,
+        loginWithGoogle,
+        logoutFromGoogle,
+        updateSpreadsheetId,
+        setAutoSyncToSheets,
+        createNewSchoolSpreadsheet,
+        syncAllToGoogleSheets,
+        syncToSheetsWithData,
+        loadAllFromGoogleSheets,
+
+        // Triggers
         setIsDedicatedNewsView,
         setIsProgramsPortalView,
         openProgramsPortal,
@@ -1431,4 +1564,3 @@ export const useSchool = () => {
   }
   return context;
 };
-

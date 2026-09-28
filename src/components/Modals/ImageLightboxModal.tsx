@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { formatGoogleDriveImageUrl } from '../../lib/googleDrive';
 import {
   X,
   ChevronLeft,
@@ -29,7 +30,8 @@ export const ImageLightboxModal: React.FC<ImageLightboxModalProps> = ({
   title,
   onClose
 }) => {
-  const validImages = Array.isArray(images) && images.length > 0 ? images.filter(Boolean) : [];
+  const rawImages = Array.isArray(images) && images.length > 0 ? images.filter(Boolean) : [];
+  const validImages = rawImages.map(img => formatGoogleDriveImageUrl(img));
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [zoomLevel, setZoomLevel] = useState<number>(1); // 1 = Fit screen, 1.5, 2, 2.5, 3
   const [isScrollMode, setIsScrollMode] = useState<boolean>(false); // Scrollable full height mode

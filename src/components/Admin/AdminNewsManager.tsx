@@ -3,6 +3,7 @@ import { useSchool } from '../../context/SchoolContext';
 import { NewsArticle } from '../../types';
 import { MultiImagePresetPicker, MediaAttachmentsManager, FALLBACK_IMAGE_URL } from './ImagePresetPicker';
 import { getNewsPermalink } from '../../utils/permalinks';
+import { formatGoogleDriveImageUrl } from '../../lib/googleDrive';
 import {
   Plus,
   Pencil,
@@ -21,7 +22,9 @@ import {
   Check,
   Video,
   Music,
-  Star
+  Star,
+  FileSpreadsheet,
+  RefreshCw
 } from 'lucide-react';
 
 export const OFFICIAL_NEWS_CATEGORIES = [
@@ -33,16 +36,42 @@ export const OFFICIAL_NEWS_CATEGORIES = [
 ];
 
 export const AdminNewsManager: React.FC = () => {
-  const { news, addNewsArticle, updateNewsArticle, deleteNewsArticle, openNewsArticle, schoolInfo } = useSchool();
+  const {
+    news,
+    addNewsArticle,
+    updateNewsArticle,
+    deleteNewsArticle,
+    openNewsArticle,
+    schoolInfo,
+    isGoogleConnected,
+    spreadsheetId,
+    spreadsheetTitle,
+    isSheetsSyncing,
+    syncToSheetsWithData,
+    lastSheetsSyncTime,
+    loginWithGoogle
+  } = useSchool();
 
   const [isEditing, setIsEditing] = useState(false);
   const [currentEditId, setCurrentEditId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [syncFeedback, setSyncFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const [isCustomCategory, setIsCustomCategory] = useState(false);
   const [customCategoryName, setCustomCategoryName] = useState('');
 
   const defaultSchoolImage = schoolInfo.defaultNewsImageUrl || FALLBACK_IMAGE_URL;
+
+  const handleManualSync = async () => {
+    setSyncFeedback(null);
+    const res = await syncToSheetsWithData({ news });
+    if (res.success) {
+      setSyncFeedback({ type: 'success', text: 'Google Sheets бааз руу амжилттай хадгалагдлаа!' });
+    } else {
+      setSyncFeedback({ type: 'error', text: res.message });
+    }
+    setTimeout(() => setSyncFeedback(null), 4000);
+  };
 
   // Collect all available categories dynamically
   const allCategories = React.useMemo(() => {
@@ -220,26 +249,85 @@ export const AdminNewsManager: React.FC = () => {
       {/* Top Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-200">
         <div>
-          <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900">
-            Мэдээ, Нийтлэл Удирдах
-          </h2>
-          <p className="text-xs sm:text-sm text-slate-500">
-            Энд оруулсан мэдээ нь нүүр хуудасны "Сүүлийн үеийн мэдээ" болон ангилал бүрт 3 хүртэлх зурагтайгаар харагдана. Өгөгдөл нь Firebase Firestore баазад автоматаар хадгалагдана.
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900">
+              Мэдээ, Нийтлэл Удирдах
+            </h2>
+            <span className="bg-amber-100 text-amber-800 text-xs font-bold px-2.5 py-0.5 rounded-full">
+              {news.length} нийтлэл
+            </span>
+            {spreadsheetId && (
+              <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-0.5 rounded-full font-medium ${
+                isGoogleConnected
+                  ? 'text-emerald-800 bg-emerald-50 border border-emerald-300'
+                  : 'text-amber-800 bg-amber-50 border border-amber-300'
+              }`}>
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>{isGoogleConnected ? 'Google Sheets баазтай синк болно' : 'Google Sheets холбогдсон'}</span>
+              </span>
+            )}
+          </div>
+          <p className="text-xs sm:text-sm text-slate-500 mt-1">
+            Энд оруулсан мэдээ нь нүүр хуудасны "Сүүлийн үеийн мэдээ"-нд харагдаж, Google Drive зургууд шууд уншигдана. Нийтлэл хадгалагдах үед Google Sheets бааз автоматаар шинэчлэгдэнэ.
           </p>
         </div>
-        {!isEditing && (
-          <button
-            onClick={() => {
-              resetForm();
-              setIsEditing(true);
-            }}
-            className="bg-amber-600 hover:bg-amber-700 text-white text-xs sm:text-sm font-semibold px-4 py-2.5 rounded-xl shadow-xs flex items-center gap-2 transition-all cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Шинэ мэдээ нийтлэх</span>
-          </button>
-        )}
+
+        <div className="flex items-center gap-2">
+          {spreadsheetId && (
+            isGoogleConnected ? (
+              <button
+                type="button"
+                onClick={handleManualSync}
+                disabled={isSheetsSyncing}
+                className="bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-semibold px-3 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs disabled:opacity-50"
+                title="Google Sheets хүснэгтийн Нийтлэл таб руу синк хийх"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSheetsSyncing ? 'animate-spin text-emerald-600' : 'text-emerald-700'}`} />
+                <span>{isSheetsSyncing ? 'Хадгалж байна...' : 'Sheets рүү хадгалах'}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={async () => {
+                  const res = await loginWithGoogle();
+                  if (res?.success) {
+                    setTimeout(() => handleManualSync(), 300);
+                  }
+                }}
+                className="bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 text-xs font-semibold px-3 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                title="Google Sheets эрхээ шинэчлэх / холбогдох"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-amber-600" />
+                <span>Google-ээр холбогдох</span>
+              </button>
+            )
+          )}
+
+          {!isEditing && (
+            <button
+              onClick={() => {
+                resetForm();
+                setIsEditing(true);
+              }}
+              className="bg-amber-600 hover:bg-amber-700 text-white text-xs sm:text-sm font-semibold px-4 py-2.5 rounded-xl shadow-xs flex items-center gap-2 transition-all cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Шинэ мэдээ нийтлэх</span>
+            </button>
+          )}
+        </div>
       </div>
+
+      {syncFeedback && (
+        <div className={`p-3 rounded-xl border text-xs sm:text-sm font-medium flex items-center gap-2 animate-in fade-in ${
+          syncFeedback.type === 'success'
+            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+            : 'bg-rose-50 border-rose-200 text-rose-800'
+        }`}>
+          {syncFeedback.type === 'success' ? <Check className="w-4 h-4 text-emerald-600" /> : <X className="w-4 h-4 text-rose-600" />}
+          <span>{syncFeedback.text}</span>
+        </div>
+      )}
 
       {/* Edit / Create Form */}
       {isEditing && (
@@ -427,7 +515,7 @@ export const AdminNewsManager: React.FC = () => {
               <div className="max-w-md bg-slate-50 rounded-2xl overflow-hidden border border-slate-200">
                 <div className="relative aspect-16/9 bg-slate-200 overflow-hidden">
                   <img
-                    src={formData.imageUrl || formData.images[0] || 'https://images.unsplash.com/photo-1523240795612-9a054b0db644?q=80&w=900&auto=format&fit=crop'}
+                    src={formatGoogleDriveImageUrl(formData.imageUrl || formData.images[0]) || 'https://images.unsplash.com/photo-1523240795612-9a054b0db644?q=80&w=900&auto=format&fit=crop'}
                     alt="Preview"
                     className="w-full h-full object-cover"
                     referrerPolicy="no-referrer"
@@ -517,7 +605,7 @@ export const AdminNewsManager: React.FC = () => {
                 <div className="flex items-center gap-4 min-w-0 flex-1">
                   <div className="relative w-20 h-14 shrink-0 rounded-lg overflow-hidden border border-slate-200">
                     <img
-                      src={item.imageUrl || itemImages[0] || defaultSchoolImage}
+                      src={formatGoogleDriveImageUrl(item.imageUrl || itemImages[0]) || defaultSchoolImage}
                       alt={item.title}
                       className="w-full h-full object-cover"
                       referrerPolicy="no-referrer"

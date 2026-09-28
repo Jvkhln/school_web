@@ -4,6 +4,7 @@ import { INITIAL_HERO_SLIDES } from '../data/initialData';
 import { NewsArticle } from '../types';
 import { ChevronLeft, ChevronRight, Sparkles, ArrowRight, FileText } from 'lucide-react';
 import { FALLBACK_IMAGE_URL } from './Admin/ImagePresetPicker';
+import { formatGoogleDriveImageUrl } from '../lib/googleDrive';
 
 interface DisplaySlide {
   id: string;
@@ -172,7 +173,7 @@ export const HeroSlider: React.FC = () => {
             }`}
           >
             <img
-              src={slide.imageUrl || defaultFallbackImage}
+              src={formatGoogleDriveImageUrl(slide.imageUrl) || defaultFallbackImage}
               alt={slide.title}
               onError={(e) => {
                 const target = e.currentTarget;

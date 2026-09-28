@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useSchool } from '../../context/SchoolContext';
 import { getNewsPermalink } from '../../utils/permalinks';
 import { ImageLightboxModal } from './ImageLightboxModal';
+import { formatGoogleDriveImageUrl } from '../../lib/googleDrive';
 import {
   X,
   Calendar,
@@ -56,12 +57,13 @@ export const NewsDetailModal: React.FC = () => {
 
   // Extract all valid images
   const defaultFallback = schoolInfo?.defaultNewsImageUrl || 'https://images.unsplash.com/photo-1523240795612-9a054b0db644?q=80&w=900&auto=format&fit=crop';
-  const imagesList = Array.isArray(selectedNewsModal.images) && selectedNewsModal.images.length > 0
+  const rawImagesList = Array.isArray(selectedNewsModal.images) && selectedNewsModal.images.length > 0
     ? selectedNewsModal.images.filter(Boolean)
     : [selectedNewsModal.imageUrl || defaultFallback];
+  const imagesList = rawImagesList.map(img => formatGoogleDriveImageUrl(img));
 
   // 1 Single Header Cover Image (Strictly only 1 image)
-  const headerCoverImage = selectedNewsModal.imageUrl || imagesList[0] || defaultFallback;
+  const headerCoverImage = formatGoogleDriveImageUrl(selectedNewsModal.imageUrl) || imagesList[0] || defaultFallback;
 
   const handleShare = () => {
     if (navigator.clipboard) {

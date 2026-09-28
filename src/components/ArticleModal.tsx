@@ -3,6 +3,7 @@ import { useSchool } from '../context/SchoolContext';
 import { getArticlePermalink } from '../utils/permalinks';
 import { ImageLightboxModal } from './Modals/ImageLightboxModal';
 import { FALLBACK_IMAGE_URL } from './Admin/ImagePresetPicker';
+import { formatGoogleDriveImageUrl } from '../lib/googleDrive';
 import { 
   X, 
   ExternalLink, 
@@ -66,12 +67,13 @@ export const ArticleModal: React.FC = () => {
   const defaultFallback = schoolInfo?.defaultNewsImageUrl || FALLBACK_IMAGE_URL;
 
   // Extract all valid images
-  const imagesList = Array.isArray(article.images) && article.images.length > 0
+  const rawImagesList = Array.isArray(article.images) && article.images.length > 0
     ? article.images.filter(Boolean)
     : [article.coverImage || defaultFallback];
+  const imagesList = rawImagesList.map(img => formatGoogleDriveImageUrl(img));
 
   // 1 Single Header Cover Image (Strictly 1 image)
-  const headerCoverImage = article.coverImage || imagesList[0] || defaultFallback;
+  const headerCoverImage = formatGoogleDriveImageUrl(article.coverImage) || imagesList[0] || defaultFallback;
 
   const getIcon = (name?: string) => {
     switch (name) {

@@ -5,6 +5,7 @@ import { NewsArticle } from '../types';
 import { getNewsPermalink } from '../utils/permalinks';
 import { CalendarSidebar } from './CalendarSidebar';
 import { FALLBACK_IMAGE_URL } from './Admin/ImagePresetPicker';
+import { formatGoogleDriveImageUrl } from '../lib/googleDrive';
 
 export const ARTICLE_NEWS_CATEGORIES = [
   { slug: 'news-info', name: 'Мэдээ, мэдээлэл' },
@@ -215,7 +216,7 @@ export const NewsSection: React.FC = () => {
                       {/* Image & Badges */}
                       <div className="relative aspect-16/10 overflow-hidden bg-slate-100">
                         <img
-                          src={item.imageUrl || (item.images && item.images[0]) || schoolInfo.defaultNewsImageUrl || FALLBACK_IMAGE_URL}
+                          src={formatGoogleDriveImageUrl(item.imageUrl || (item.images && item.images[0])) || schoolInfo.defaultNewsImageUrl || FALLBACK_IMAGE_URL}
                           alt={item.title}
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                           referrerPolicy="no-referrer"

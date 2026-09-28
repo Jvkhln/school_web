@@ -15,7 +15,9 @@ import {
   Link as LinkIcon,
   Tag,
   Eye,
-  EyeOff
+  EyeOff,
+  FileSpreadsheet,
+  RefreshCw
 } from 'lucide-react';
 
 interface SubdomainPreset {
@@ -104,12 +106,34 @@ const PRESET_SUBDOMAINS: SubdomainPreset[] = [
 ];
 
 export const AdminCategoryManager: React.FC = () => {
-  const { categories, addCategory, updateCategory, deleteCategory } = useSchool();
+  const {
+    categories,
+    addCategory,
+    updateCategory,
+    deleteCategory,
+    isGoogleConnected,
+    spreadsheetId,
+    isSheetsSyncing,
+    syncToSheetsWithData,
+    loginWithGoogle
+  } = useSchool();
 
   const [isEditing, setIsEditing] = useState(false);
   const [currentEditId, setCurrentEditId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [iconSearch, setIconSearch] = useState('');
+  const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+
+  const handleManualSync = async () => {
+    setSyncFeedback(null);
+    const res = await syncToSheetsWithData({ categories });
+    if (res.success) {
+      setSyncFeedback('Google Sheets бааз руу амжилттай хадгалагдлаа!');
+    } else {
+      setSyncFeedback(res.message);
+    }
+    setTimeout(() => setSyncFeedback(null), 4000);
+  };
 
   const [formData, setFormData] = useState({
     name: '',
@@ -229,30 +253,79 @@ export const AdminCategoryManager: React.FC = () => {
       {/* Top Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-200">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900">
               Сургуулийн цахим экосистем (Sub-Домайн холбоосууд)
             </h2>
             <span className="bg-amber-100 text-amber-800 text-xs font-bold px-2.5 py-0.5 rounded-full">
               {categories.length} систем
             </span>
+            {spreadsheetId && (
+              <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-0.5 rounded-full font-medium ${
+                isGoogleConnected
+                  ? 'text-emerald-800 bg-emerald-50 border border-emerald-300'
+                  : 'text-amber-800 bg-amber-50 border border-amber-300'
+              }`}>
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>{isGoogleConnected ? 'Google Sheets баазтай синк болно' : 'Google Sheets холбогдсон'}</span>
+              </span>
+            )}
           </div>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            Нүүр хуудсанд байрлах сургуулийн цахим экосистемийн порталууд тус бүрийн Sub-домайн URL, икон, шошгыг удирдах хэсэг.
+            Нүүр хуудсанд байрлах сургуулийн цахим экосистемийн порталууд тус бүрийн Sub-домайн URL, икон, шошгыг удирдах хэсэг. Өөрчлөлт Google Sheets баазад шууд хадгалагдана.
           </p>
+          {syncFeedback && (
+            <div className="mt-2 text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg inline-flex items-center gap-1.5 animate-in fade-in">
+              <Check className="w-3.5 h-3.5 text-emerald-600" />
+              <span>{syncFeedback}</span>
+            </div>
+          )}
         </div>
-        {!isEditing && (
-          <button
-            onClick={() => {
-              resetForm();
-              setIsEditing(true);
-            }}
-            className="bg-amber-600 hover:bg-amber-700 text-white text-xs sm:text-sm font-semibold px-4 py-2.5 rounded-xl shadow-xs flex items-center gap-2 transition-all cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Шинэ Sub-домайн нэмэх</span>
-          </button>
-        )}
+
+        <div className="flex items-center gap-2">
+          {spreadsheetId && (
+            isGoogleConnected ? (
+              <button
+                type="button"
+                onClick={handleManualSync}
+                disabled={isSheetsSyncing}
+                className="bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-semibold px-3 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs disabled:opacity-50"
+                title="Sub-домайн холбоосуудыг Google Sheets рүү хадгалах"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSheetsSyncing ? 'animate-spin text-emerald-600' : 'text-emerald-700'}`} />
+                <span>{isSheetsSyncing ? 'Хадгалж байна...' : 'Sheets рүү хадгалах'}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={async () => {
+                  const res = await loginWithGoogle();
+                  if (res?.success) {
+                    setTimeout(() => handleManualSync(), 300);
+                  }
+                }}
+                className="bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 text-xs font-semibold px-3 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                title="Google Sheets эрхээ шинэчлэх / холбогдох"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-amber-600" />
+                <span>Google-ээр холбогдох</span>
+              </button>
+            )
+          )}
+
+          {!isEditing && (
+            <button
+              onClick={() => {
+                resetForm();
+                setIsEditing(true);
+              }}
+              className="bg-amber-600 hover:bg-amber-700 text-white text-xs sm:text-sm font-semibold px-4 py-2.5 rounded-xl shadow-xs flex items-center gap-2 transition-all cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Шинэ sub-домайн нэмэх</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Quick Preset Subdomain Bar */}

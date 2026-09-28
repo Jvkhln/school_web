@@ -2,8 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useSchool } from '../../context/SchoolContext';
 import { SchoolInfo, FeedbackEmailSetting, FeedbackType, SmtpConfig } from '../../types';
 import { DEFAULT_FEEDBACK_EMAIL_SETTINGS } from '../../data/initialData';
-import { db } from '../../lib/firebase';
-import { doc, setDoc } from 'firebase/firestore';
+import { AdminGoogleSheetsManager } from './AdminGoogleSheetsManager';
 import {
   Save,
   RotateCcw,
@@ -237,10 +236,6 @@ export const AdminSettingsManager: React.FC = () => {
     }
   };
 
-  // Cloud sync state
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<string | null>(null);
-
   // Password & credentials state
   const [currentPass, setCurrentPass] = useState('');
   const [newPass, setNewPass] = useState('');
@@ -327,55 +322,6 @@ export const AdminSettingsManager: React.FC = () => {
       secure: false,
       enabled: true
     }));
-  };
-
-  const handleSyncToFirebase = async () => {
-    setIsSyncing(true);
-    setSyncStatus(null);
-    try {
-      // 1. Settings
-      await setDoc(doc(db, 'settings', 'schoolInfo'), schoolInfo);
-      await setDoc(doc(db, 'settings', 'sectionTexts'), sectionTexts);
-      await setDoc(doc(db, 'settings', 'feedbackEmails'), { items: emailSettings });
-      await setDoc(doc(db, 'settings', 'adminProfile'), {
-        username: adminProfileName,
-        email: adminProfileEmail,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-
-      // 2. Programs
-      for (const prog of programs) {
-        await setDoc(doc(db, 'programs', prog.id), prog);
-      }
-
-      // 3. News
-      for (const item of news) {
-        await setDoc(doc(db, 'news', item.id), item);
-      }
-
-      // 4. Categories
-      for (const cat of categories) {
-        await setDoc(doc(db, 'categories', cat.id), cat);
-      }
-
-      // 5. Slides
-      for (const slide of heroSlides) {
-        await setDoc(doc(db, 'slides', slide.id), slide);
-      }
-
-      // 6. Calendar
-      for (const event of calendarEvents) {
-        await setDoc(doc(db, 'calendar', event.id), event);
-      }
-
-      setSyncStatus('Бүх өгөгдөл Firebase Firestore бааз руу амжилттай синк хийгдэж хадгалагдлаа!');
-      setTimeout(() => setSyncStatus(null), 5000);
-    } catch (err) {
-      console.error('Firebase sync error:', err);
-      setSyncStatus('Өгөгдөл синк хийхэд алдаа гарлаа. Интернэт холболтоо шалгана уу.');
-    } finally {
-      setIsSyncing(false);
-    }
   };
 
   const handlePasswordChange = (e: React.FormEvent) => {
@@ -2163,58 +2109,8 @@ export const AdminSettingsManager: React.FC = () => {
         </div>
       </form>
 
-      {/* Firebase Cloud Firestore Sync Card */}
-      <div className="bg-gradient-to-br from-slate-900 to-slate-800 text-white p-6 rounded-2xl border border-slate-700 shadow-md space-y-4">
-        <div className="flex items-center justify-between border-b border-slate-700/80 pb-3">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/30">
-              <Database className="w-4 h-4" />
-            </div>
-            <div>
-              <h3 className="font-bold text-sm text-white flex items-center gap-2">
-                <span>Google Firebase Firestore бааз</span>
-                <span className="bg-emerald-500/20 text-emerald-300 text-[10px] font-semibold px-2 py-0.5 rounded-full border border-emerald-500/30">
-                  Холбогдсон
-                </span>
-              </h3>
-              <p className="text-[11px] text-slate-400">
-                Сургуулийн бүх мэдээ, хөтөлбөр, хуанли үүлэн бааз (Cloud Database) дээр найдвартай хадгалагдана.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {syncStatus && (
-          <div className="p-3 bg-emerald-950/80 border border-emerald-600/50 text-emerald-200 text-xs rounded-xl flex items-center gap-2 animate-in fade-in">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-            <span>{syncStatus}</span>
-          </div>
-        )}
-
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-          <p className="text-xs text-slate-300 max-w-md">
-            Админ самбарт өөрчлөлт хийхэд автоматаар хадгалагддаг. Мөн одоогийн бүх анхны мэдээллийг Firebase бааз руу нэг дор синк хийж болно.
-          </p>
-          <button
-            type="button"
-            disabled={isSyncing}
-            onClick={handleSyncToFirebase}
-            className="bg-amber-500 hover:bg-amber-400 active:scale-95 disabled:opacity-50 text-slate-950 font-bold text-xs px-4 py-2.5 rounded-xl shadow-xs transition-all flex items-center gap-2 cursor-pointer"
-          >
-            {isSyncing ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Синк хийж байна...</span>
-              </>
-            ) : (
-              <>
-                <CloudUpload className="w-4 h-4" />
-                <span>Бүх өгөгдлийг Firebase руу синк хийх</span>
-              </>
-            )}
-          </button>
-        </div>
-      </div>
+      {/* Google Sheets Integration Section */}
+      <AdminGoogleSheetsManager />
 
       {/* Backup, Export & Reset Section */}
       <div className="bg-slate-100 p-6 rounded-2xl border border-slate-200 space-y-4">

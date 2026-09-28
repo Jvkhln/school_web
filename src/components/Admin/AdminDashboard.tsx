@@ -9,6 +9,7 @@ import { AdminSettingsManager } from './AdminSettingsManager';
 import { AdminSectionTextsManager } from './AdminSectionTextsManager';
 import { AdminCalendarManager } from './AdminCalendarManager';
 import { AdminInstitutionalArticlesManager } from './AdminInstitutionalArticlesManager';
+import { AdminGoogleSheetsManager } from './AdminGoogleSheetsManager';
 import {
   FileText,
   GraduationCap,
@@ -28,10 +29,11 @@ import {
   BookOpen,
   Compass,
   Target,
+  FileSpreadsheet,
   X
 } from 'lucide-react';
 
-type AdminTab = 'news' | 'programs' | 'slides' | 'about' | 'categories' | 'articles' | 'calendar' | 'texts' | 'settings';
+type AdminTab = 'news' | 'programs' | 'slides' | 'about' | 'categories' | 'articles' | 'calendar' | 'texts' | 'sheets' | 'settings';
 
 export const AdminDashboard: React.FC = () => {
   const {
@@ -42,6 +44,8 @@ export const AdminDashboard: React.FC = () => {
     heroSlides,
     calendarEvents,
     institutionalArticles,
+    inquiries,
+    isGoogleConnected,
     adminUsername,
     logoutAdmin,
     setIsAdminOpen
@@ -79,11 +83,21 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2.5">
-              {/* Firebase Database Status Badge */}
-              <div className="hidden lg:flex items-center gap-1.5 bg-emerald-950/80 px-3 py-1.5 rounded-xl border border-emerald-500/40 text-xs text-emerald-300">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span className="font-semibold">Firebase Firestore</span>
-              </div>
+              {/* Google Sheets Database Status Badge */}
+              <button
+                type="button"
+                onClick={() => setActiveTab('sheets')}
+                className={`hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs transition-all cursor-pointer ${
+                  isGoogleConnected
+                    ? 'bg-emerald-950/80 hover:bg-emerald-900 border-emerald-500/40 text-emerald-300'
+                    : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-300'
+                }`}
+                title="Google Sheets өгөгдлийн сангийн төлөв"
+              >
+                <FileSpreadsheet className={`w-3.5 h-3.5 ${isGoogleConnected ? 'text-emerald-400' : 'text-slate-400'}`} />
+                <span className={`w-2 h-2 rounded-full ${isGoogleConnected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+                <span className="font-semibold">{isGoogleConnected ? 'Google Sheets холбогдсон' : 'Google Sheets холбох'}</span>
+              </button>
 
               {/* User indicator & Quick Settings link */}
               <button
@@ -380,6 +394,19 @@ export const AdminDashboard: React.FC = () => {
           </button>
 
           <button
+            id="tab-btn-sheets"
+            onClick={() => setActiveTab('sheets')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+              activeTab === 'sheets'
+                ? 'bg-emerald-700 text-white shadow-xs'
+                : 'text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200'
+            }`}
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            <span>Google Sheets бааз</span>
+          </button>
+
+          <button
             id="tab-btn-settings"
             onClick={() => setActiveTab('settings')}
             className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer sm:ml-auto ${
@@ -403,6 +430,7 @@ export const AdminDashboard: React.FC = () => {
           {activeTab === 'articles' && <AdminInstitutionalArticlesManager />}
           {activeTab === 'calendar' && <AdminCalendarManager />}
           {activeTab === 'texts' && <AdminSectionTextsManager />}
+          {activeTab === 'sheets' && <AdminGoogleSheetsManager />}
           {activeTab === 'settings' && <AdminSettingsManager />}
         </div>
       </main>

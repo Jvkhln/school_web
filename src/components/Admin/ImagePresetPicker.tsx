@@ -1,4 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { uploadDataUrlToDrive, formatGoogleDriveImageUrl, isGoogleDriveUrl } from '../../lib/googleDrive';
+import { getAccessToken } from '../../lib/firebase';
 import {
   Image,
   Check,
@@ -181,12 +183,18 @@ interface ImagePresetPickerProps {
 }
 
 export const ImagePresetPicker: React.FC<ImagePresetPickerProps> = ({ value, onChange, label, recommendedAspect }) => {
-  const [customInput, setCustomInput] = useState(value);
+  const [customInput, setCustomInput] = useState(formatGoogleDriveImageUrl(value) || value || '');
   const [isUploading, setIsUploading] = useState(false);
 
+  useEffect(() => {
+    setCustomInput(formatGoogleDriveImageUrl(value) || value || '');
+  }, [value]);
+
   const handleCustomChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setCustomInput(e.target.value);
-    onChange(e.target.value);
+    const raw = e.target.value;
+    const formatted = formatGoogleDriveImageUrl(raw);
+    setCustomInput(formatted);
+    onChange(formatted);
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -196,6 +204,21 @@ export const ImagePresetPicker: React.FC<ImagePresetPickerProps> = ({ value, onC
       try {
         const compressed = await compressImageFile(file);
         if (compressed) {
+          // If Google account is connected, automatically upload to Google Drive for clean link
+          try {
+            const token = await getAccessToken();
+            if (token) {
+              const driveUrl = await uploadDataUrlToDrive(token, compressed, file.name || 'image.jpg');
+              if (driveUrl) {
+                setCustomInput(driveUrl);
+                onChange(driveUrl);
+                return;
+              }
+            }
+          } catch (e) {
+            console.warn('Drive upload fallback to local image:', e);
+          }
+
           setCustomInput(compressed);
           onChange(compressed);
         }
@@ -224,7 +247,7 @@ export const ImagePresetPicker: React.FC<ImagePresetPickerProps> = ({ value, onC
           <LinkIcon className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
           <input
             type="url"
-            placeholder="Зургийн линк (URL) оруулах эсвэл бэлэн зургуудаас сонгох..."
+            placeholder="Google Drive линк эсвэл зургийн URL оруулах..."
             value={customInput}
             onChange={handleCustomChange}
             className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-white border border-slate-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-amber-500"
@@ -236,6 +259,13 @@ export const ImagePresetPicker: React.FC<ImagePresetPickerProps> = ({ value, onC
           <input type="file" accept="image/*" onChange={handleFileUpload} className="hidden" />
         </label>
       </div>
+
+      {isGoogleDriveUrl(customInput) && (
+        <div className="flex items-center gap-1.5 text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg font-medium">
+          <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+          <span>Google Drive шууд унших зураг холбогдсон</span>
+        </div>
+      )}
 
       {/* Preset thumbnails */}
       <div>
@@ -316,7 +346,8 @@ export const MultiImagePresetPicker: React.FC<MultiImagePresetPickerProps> = ({
 
   const handleUpdateImage = (index: number, url: string) => {
     const updated = [...currentImages];
-    updated[index] = url;
+    const formatted = formatGoogleDriveImageUrl(url);
+    updated[index] = formatted;
     onChange(updated);
   };
 
@@ -349,6 +380,19 @@ export const MultiImagePresetPicker: React.FC<MultiImagePresetPickerProps> = ({
       try {
         const compressed = await compressImageFile(file);
         if (compressed) {
+          try {
+            const token = await getAccessToken();
+            if (token) {
+              const driveUrl = await uploadDataUrlToDrive(token, compressed, file.name || 'image.jpg');
+              if (driveUrl) {
+                handleUpdateImage(activeSlot, driveUrl);
+                return;
+              }
+            }
+          } catch (e) {
+            console.warn('Drive upload fallback to local image:', e);
+          }
+
           handleUpdateImage(activeSlot, compressed);
         }
       } catch (err) {
@@ -465,7 +509,7 @@ export const MultiImagePresetPicker: React.FC<MultiImagePresetPickerProps> = ({
             <LinkIcon className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
             <input
               type="url"
-              placeholder="Зургийн линк (URL) оруулах..."
+              placeholder="Google Drive линк эсвэл зургийн URL оруулах..."
               value={activeImageUrl}
               onChange={(e) => handleUpdateImage(activeSlot, e.target.value)}
               className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-amber-500"
@@ -478,6 +522,13 @@ export const MultiImagePresetPicker: React.FC<MultiImagePresetPickerProps> = ({
             <input type="file" accept="image/*" onChange={handleFileUpload} className="hidden" />
           </label>
         </div>
+
+        {isGoogleDriveUrl(activeImageUrl) && (
+          <div className="flex items-center gap-1.5 text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg font-medium">
+            <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+            <span>Google Drive шууд унших зураг холбогдсон</span>
+          </div>
+        )}
 
         {/* Presets Grid */}
         <div>
